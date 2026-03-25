@@ -9,11 +9,11 @@ This module is part of a modern, modular Kinetic SDK infrastructure designed for
     - The SDK (this repo) acts as the host, providing API, deployment, and orchestration logic, while project submodules are the payloads.
     - Public/private separation: SDK core remains clean and trackable; business logic and sensitive assets live in private submodules.
 
-2. **Zero-Knowledge "Vault" Auth Layer**
-    - The OS keyring is used only as an encrypted blob store; no plain-text secrets are stored.
-    - User provides a personal salt/passphrase at runtime (never stored on disk).
-    - PBKDF2 + AES-256: Credentials (API keys, tokens) are encrypted with a key derived from the passphrase and stored as JSON blobs in the keyring.
-    - Even with full keyring access, secrets are unreadable without the user’s passphrase.
+2. **Secure Auth Layer (with Optional Zero-Knowledge Vault)**
+    - Credentials are stored in the OS keyring (Windows Credential Manager) by default.
+    - Optional "Vault" mode: User provides a personal salt/passphrase at runtime.
+    - PBKDF2 + AES-256: Credentials are encrypted before storage, ensuring zero-knowledge privacy.
+    - Even with full keyring access, secrets are unreadable without the user’s passphrase (in Vault mode).
     - CI/CD compatibility: In automated environments, secrets can be injected via environment variables, bypassing interactive prompts.
 
 3. **Orchestration & CI/CD Workflow**
