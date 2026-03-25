@@ -8,6 +8,7 @@ import os
 import getpass
 import keyring
 from typing import Optional, Dict, Set
+from urllib.parse import urlsplit, urlunsplit
 
 class KineticCore:
     def __init__(self, debug: bool = False):
@@ -168,41 +169,130 @@ class KineticCore:
         """
         Applies heuristic regex to redact sensitive JSON fields in logs.
         Matches keys like 'Company', 'Password', 'Token', etc.
+        Handles both normal JSON ("key": "val") and escaped/stringified JSON (\"key\":\"val\").
         """
         if not text: return text
-        
-        # Keywords derived from your regex
+
+        # Keywords — any key whose name starts with one of these is redacted
         keywords = (
-            r"SysRow|job|part|desc|pay|doc|path|vend|addr|auth|ship|cust|plant|company|comp|"
+            r"SysRow|job|part|desc|pay|pass|doc|path|vend|addr|auth|ship|cust|plant|company|comp|"
             r"user|email|phone|contact|acct|tax|amt|price|host|api|key|token|sec|order|inv|"
             r"pack|po|quote|check|serial|lot|comment|note|entity|code"
         )
-        
+
         # Suffixes (optional)
         suffixes = r"(?:[\-\s_]*(?:id|name|num|ref|val|short|full|title|author))?"
-        
-        # Pattern: Group 1 (Key+Sep+Quote), Group 2 (Value), Lookahead (End Quote)
+
+        # Quote helpers: handle both plain " and escaped \" (stringified JSON)
+        quote     = r'(?:\\?[\"\'])'   # required quote (plain or backslash-escaped)
+        quote_opt = r'(?:\\?[\"\'])?'  # optional quote
+
+        # Pattern: Group 1 (Key + separator + opening value quote), Group 2 (value)
         pattern = (
-            r'(?i)'                                      # Case insensitive
-            r'('                                         # Start Group 1
-            r'\"?'                                       # Optional opening quote for key
-            r'(?:' + keywords + r')'                     # Keywords
-            + suffixes +                                 # Optional suffixes
-            r'[^:\"\']*'                                 # Allow chars before quote close
-            r'\"?'                                       # Optional closing quote for key
-            r'\s*:\s*'                                   # Colon and whitespace
-            r'[\"\']'                                    # Opening quote for value
-            r')'                                         # End Group 1
-            r'(.*?)'                                     # Group 2: Value (Non-greedy)
-            r'(?='                                       # Lookahead
-            r'[\"\'](?:\s*[,}\]\r\n]|$)'                 # Closing quote + delimiter
+            r'(?i)'                                  # Case insensitive
+            r'('                                     # Group 1 start
+            + quote_opt +                            # Optional opening key quote
+            r'(?:' + keywords + r')'                 # Keyword match
+            + suffixes +                             # Optional suffixes
+            r'[^:\\\"\']*'                           # Chars between keyword and closing key quote
+            + quote_opt +                            # Optional closing key quote
+            r'\s*:\s*'                               # Colon separator (whitespace tolerant)
+            + quote +                                # Required opening value quote
+            r')'                                     # Group 1 end
+            r'(.*?)'                                 # Group 2: value (non-greedy)
+            r'(?='                                   # Lookahead (zero-width)
+            + quote +                                # Closing value quote
+            r'(?:\s*[,}\]\r\n]|\s*$)'               # Followed by delimiter or end of string
             r')'
         )
-        
+
         try:
             return re.sub(pattern, r'\1[REDACTED]', text)
         except Exception:
             return text
+
+    def _redact_url_fragments(self, text: str) -> str:
+        """Replace any absolute URLs embedded in free text with a placeholder."""
+        if not text:
+            return text
+        return re.sub(r'https?://[^\s"\'<>]+', '[REDACTED_URL]', text)
+
+    def _redact_url(self, url: str) -> str:
+        """Redact proprietary URL components while preserving endpoint shape."""
+        if not url:
+            return url
+        try:
+            parts = urlsplit(str(url))
+            if not parts.scheme or not parts.netloc:
+                return '[REDACTED_URL]'
+
+            path = re.sub(
+                r'(?i)(/api/v\d+/(?:odata|efx)/)([^/?#]+)',
+                r'\1[REDACTED_COMPANY]',
+                parts.path,
+            )
+            query = '[REDACTED_QUERY]' if parts.query else ''
+            fragment = '[REDACTED_FRAGMENT]' if parts.fragment else ''
+            return urlunsplit((parts.scheme, '[REDACTED_HOST]', path, query, fragment))
+        except Exception:
+            return '[REDACTED_URL]'
+
+    def _redact_runtime_values(self, text: str) -> str:
+        """Redact active runtime identity values that may appear in free-form messages."""
+        if not text or not hasattr(self, 'config') or not isinstance(self.config, dict):
+            return text
+
+        replacements = []
+        url = self.config.get('url', '')
+        if url:
+            try:
+                parts = urlsplit(str(url))
+                replacements.extend([
+                    parts.netloc,
+                    parts.hostname or '',
+                    parts.path.strip('/'),
+                ])
+            except Exception:
+                replacements.append(str(url))
+
+        replacements.extend([
+            self.config.get('company', ''),
+            self.config.get('user_id', ''),
+            self.config.get('nickname', ''),
+        ])
+
+        cleaned = text
+        for value in sorted({str(item) for item in replacements if item}, key=len, reverse=True):
+            cleaned = re.sub(re.escape(value), '[REDACTED]', cleaned, flags=re.IGNORECASE)
+        return cleaned
+
+    def _sanitize_log_text(self, text: str) -> str:
+        """Apply zero-trust sanitization before printing any free-form text."""
+        if not text:
+            return text
+        return self._heuristic_redact(self._redact_runtime_values(self._redact_url_fragments(text)))
+
+    def _redact_headers(self, headers: Dict) -> Dict:
+        """Redact sensitive header values before they reach stdout."""
+        if not headers:
+            return {}
+
+        sensitive_key = re.compile(
+            r'(?i)^(authorization|x-api-key|x-company|x-epicor-company|cookie|set-cookie|x-user|x-user-id|x-token|host)$'
+        )
+
+        safe_headers = {}
+        for key, value in headers.items():
+            if sensitive_key.search(str(key)):
+                if str(key).lower() == 'authorization' and isinstance(value, str) and value.startswith('Bearer '):
+                    safe_headers[key] = 'Bearer [REDACTED]'
+                else:
+                    safe_headers[key] = '[REDACTED]'
+            elif isinstance(value, str):
+                safe_headers[key] = self._sanitize_log_text(value)
+            else:
+                safe_headers[key] = value
+        return safe_headers
 
     def build_headers(self, token: str, api_key: str, company: str) -> Dict[str, str]:
         """Standardized header builder for Kinetic API calls."""
@@ -224,15 +314,11 @@ class KineticCore:
         print("\n" + "="*60)
         print("🔍 WIRE LOG (REDACTED)")
         print(f"Method: {method}")
-        print(f"URL: {url}")
+        print(f"URL: {self._redact_url(url)}")
         
         # Redact sensitive headers
         if headers:
-            safe_headers = headers.copy()
-            if 'Authorization' in safe_headers:
-                safe_headers['Authorization'] = "Bearer ****REDACTED****"
-            if 'X-API-Key' in safe_headers:
-                safe_headers['X-API-Key'] = "****REDACTED****"
+            safe_headers = self._redact_headers(headers)
             try:
                 print(f"Headers: {json.dumps(safe_headers, indent=2)}")
             except:
@@ -241,7 +327,7 @@ class KineticCore:
         # Log Body (Redacted)
         if body:
             body_str = json.dumps(body, indent=2) if isinstance(body, (dict, list)) else str(body)
-            print(f"Request Body: {self._heuristic_redact(body_str)}")
+            print(f"Request Body: {self._sanitize_log_text(body_str)}")
 
         # Log response status
         if resp:
@@ -250,9 +336,9 @@ class KineticCore:
                 try:
                     err_body = resp.json()
                     err_str = json.dumps(err_body, indent=2)
-                    print(f"Error Body: {self._heuristic_redact(err_str)}")
+                    print(f"Error Body: {self._sanitize_log_text(err_str)}")
                 except:
-                    print(f"Body: {self._heuristic_redact(resp.text[:500] if resp.text else 'empty')}")
+                    print(f"Body: {self._sanitize_log_text(resp.text[:500] if resp.text else 'empty')}")
         
         print("="*60 + "\n")
         
