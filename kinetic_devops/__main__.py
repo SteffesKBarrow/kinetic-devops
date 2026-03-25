@@ -14,7 +14,7 @@ def main():
     # Mapping sub-commands to the main functions of your modules
     subparsers.add_parser("auth", help="Manage server configs and tokens")
     subparsers.add_parser("baq", help="Execute BAQ queries")
-    subparsers.add_parser("meta", help="Fetch UI metadata")
+    subparsers.add_parser("meta", help="MetaFX tools (fetch UI metadata, core layer import/delete operations)")
     subparsers.add_parser("find", help="Find sensitive data in the project")
     subparsers.add_parser("efx", help="Execute Epicor Functions")
     subparsers.add_parser("report", help="Upload and Extract Reports")
