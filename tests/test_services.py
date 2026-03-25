@@ -1,60 +1,62 @@
-#!/usr/bin/env python
-"""Comprehensive test of all services: imports, methods, and CLI."""
+"""Service surface smoke tests migrated from root-level test_services.py."""
 
 import subprocess
 import sys
+import unittest
+
 from kinetic_devops import (
     KineticBAQService,
     KineticBOReaderService,
-    KineticFileService
+    KineticFileService,
 )
 
-print("=" * 60)
-print("KINETIC SDK SERVICE TESTS")
-print("=" * 60)
 
-# Test 1: Imports
-print("\n[TEST 1] Service Imports")
-print("✅ All 4 services imported successfully")
+class TestServiceSurface(unittest.TestCase):
+    """Validate service class availability and basic public surface."""
 
-services = [
-    ("KineticBAQService", KineticBAQService, "baq"),
-    ("KineticBOReaderService", KineticBOReaderService, "boreader"),
-    ("KineticFileService", KineticFileService, "file_service"),
-]
+    def test_service_classes_are_importable(self):
+        self.assertTrue(callable(KineticBAQService))
+        self.assertTrue(callable(KineticBOReaderService))
+        self.assertTrue(callable(KineticFileService))
 
-# Test 2: Public Methods
-print("\n[TEST 2] Public Methods")
-for name, service_class, _ in services:
-    methods = [m for m in dir(service_class) if not m.startswith("_") and callable(getattr(service_class, m))]
-    print(f"\n{name}:")
-    print(f"  Methods: {methods}")
+    def test_public_methods_exist(self):
+        services = [
+            KineticBAQService,
+            KineticBOReaderService,
+            KineticFileService,
+        ]
 
-# Test 3: CLI Help for each service
-print("\n[TEST 3] CLI Help Tests")
-cli_modules = [
-    ("baq", "kinetic_devops.baq"),
-    ("boreader", "kinetic_devops.boreader"),
-    ("file_service", "kinetic_devops.file_service"),
-]
+        for service_class in services:
+            methods = [
+                name
+                for name in dir(service_class)
+                if not name.startswith("_") and callable(getattr(service_class, name))
+            ]
+            self.assertGreater(len(methods), 0, f"No public methods detected on {service_class.__name__}")
 
-for name, module in cli_modules:
-    print(f"\n{name} --help:")
-    try:
+
+class TestServiceCliSmoke(unittest.TestCase):
+    """Verify each service CLI responds to --help without crashing."""
+
+    def _assert_help_works(self, module_name: str):
         result = subprocess.run(
-            [sys.executable, "-m", module, "--help"],
+            [sys.executable, "-m", module_name, "--help"],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
-        # Print first 8 lines of help
-        lines = result.stdout.split('\n')[:8]
-        for line in lines:
-            print(f"  {line}")
-        print(f"  ✅ CLI works")
-    except Exception as e:
-        print(f"  ❌ Error: {e}")
+        self.assertEqual(result.returncode, 0, f"{module_name} --help failed")
+        self.assertIn("usage:", result.stdout.lower(), f"{module_name} help output missing usage")
 
-print("\n" + "=" * 60)
-print("TESTS COMPLETE")
-print("=" * 60)
+    def test_baq_cli_help(self):
+        self._assert_help_works("kinetic_devops.baq")
+
+    def test_boreader_cli_help(self):
+        self._assert_help_works("kinetic_devops.boreader")
+
+    def test_file_service_cli_help(self):
+        self._assert_help_works("kinetic_devops.file_service")
+
+
+if __name__ == "__main__":
+    unittest.main()
