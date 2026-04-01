@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
 
 ### Added
-- **Core Authentication** — Secure keyring-backed credential management with PBKDF2+AES-256 encryption
+- **Core Authentication** — Secure keyring-backed credential management with optional PBKDF2+AES-256 encryption
 - **Multi-environment Support** — Switch seamlessly between Dev/Test/Prod environments
 - **Service Clients**:
   - `KineticBAQService` — Execute Business Analysis Queries
