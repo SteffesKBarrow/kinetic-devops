@@ -1,6 +1,7 @@
 # Git ignore file for project 
 Data/
 bin/
+exports/
 temp/
 tmp/
 exports/
