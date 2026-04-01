@@ -10,7 +10,14 @@ from typing import List, Tuple, Dict, Any
 try:
     from .auth import KineticConfigManager
 except ImportError:
-    KineticConfigManager = None
+    # Support direct execution: `python .\\kinetic_devops\\find_sensitive_data.py`
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    try:
+        from kinetic_devops.auth import KineticConfigManager  # type: ignore
+    except Exception:
+        KineticConfigManager = None
 
 # Define generic patterns for sensitive information
 GENERIC_PATTERNS = {
@@ -22,14 +29,20 @@ GENERIC_PATTERNS = {
     "GENERIC_HEX_32": re.compile(r'["\']([a-fA-F0-9]{32,})["\']'),
     # Generic Base64 strings (32+ chars) often used for keys/secrets
     "GENERIC_BASE64_32": re.compile(r'["\']([A-Za-z0-9+/]{32,}={0,2})["\']'),
-    "PRIVATE_KEY_BLOCK": re.compile(r'PRIVATE KEY'),
+    "PRIVATE_KEY_BLOCK": re.compile(r'PRIVATE.{0,5}KEY'), 
+    # Generic long hex strings often used for keys (45+ chars to skip MD5/UUID noise)
+    "GENERIC_HEX": re.compile(r'["\']([a-fA-F0-9]{45,})["\']'),
+    # Generic Base64 strings (45+ chars) often used for keys/secrets
+    "GENERIC_BASE64": re.compile(r'["\']([A-Za-z0-9+/]{45,}={0,2})["\']'),
+    "PRIVATE_KEY_BLOCK": re.compile(r'(?i)PRIVATE.{0,5}KEY'), 
+    # Private_-+=*KEY
 }
 
 # Exclusion Lists
 WINDOWS_EXCLUDE_DIRS = {"$RECYCLE.BIN", "System Volume Information"}
 BUILD_EXCLUDE_DIRS = {"node_modules", "dist", "build", "venv", ".venv", "env", "__pycache__", "bin", "obj"}
 METADATA_EXCLUDE_DIRS = {".git", ".vs", ".vscode", ".idea"}
-CUSTOM_EXCLUDE_DIRS = {"schemas", "templates", "reports", "Apps", "layers", "temp", "BusyBox-c695", "Win-c695"}
+CUSTOM_EXCLUDE_DIRS = {"schemas", "temp", "logs", "output", "artifacts"}
 
 # Combine all exclusions
 DEFAULT_EXCLUDE_DIRS = set().union(
@@ -48,6 +61,25 @@ BINARY_EXTENSIONS = {
     '.zip', '.tar', '.gz', '.7z', '.rar'
 }
 
+
+def confirm_sensitive_stream_mode() -> bool:
+    """Require interactive acknowledgement before revealing raw matches."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("❌ --stream-sensitive-data is blocked in non-interactive mode.")
+        return False
+
+    print("\n⚠️  DANGER: Raw sensitive values will be printed to the terminal.")
+    print("This mode is intended only for controlled manual triage sessions.")
+    try:
+        answer = input("Type STREAM to proceed: ").strip()
+    except EOFError:
+        return False
+
+    if answer != "STREAM":
+        print("Aborted. Sensitive streaming was not enabled.")
+        return False
+    return True
+
 def is_text_file(file_path: str) -> bool:
     """Check if a file is text (not binary) by extension and content."""
     # Fast check by extension
@@ -62,7 +94,11 @@ def is_text_file(file_path: str) -> bool:
     except Exception:
         return False
 
-def scan_zip_archive(zip_path: str, patterns: Dict[str, re.Pattern]) -> List[Tuple[str, int, str, str]]:
+def scan_zip_archive(
+    zip_path: str,
+    patterns: Dict[str, re.Pattern],
+    reveal_matches: bool = False,
+) -> List[Tuple[str, int, str, str]]:
     """Scans files inside a zip archive."""
     findings = []
     try:
@@ -89,7 +125,14 @@ def scan_zip_archive(zip_path: str, patterns: Dict[str, re.Pattern]) -> List[Tup
                             if len(line) > 500: continue
                             for pattern_name, regex in patterns.items():
                                 for match in regex.finditer(line):
-                                    findings.append((f"{zip_path}!{member.filename}", i, pattern_name, match.group(0)))
+                                    findings.append(
+                                        (
+                                            f"{zip_path}!{member.filename}",
+                                            i,
+                                            pattern_name,
+                                            match.group(0) if reveal_matches else f"[{len(match.group(0))} chars redacted]",
+                                        )
+                                    )
                 except Exception:
                     pass
     except Exception:
@@ -117,6 +160,7 @@ def get_sensitive_data_from_keyring() -> Dict[str, re.Pattern]:
 
 def get_files_to_scan(start_path: str, use_gitignore: bool, exclude_dirs: set) -> List[str]:
     """Generates a list of files to scan, optionally respecting .gitignore."""
+    """Generates a list of files to scan, optionally respecting .gitignore, falling back to os.walk."""
     file_list = []
     
     # Method 1: Try Git (if requested and available)
@@ -124,21 +168,34 @@ def get_files_to_scan(start_path: str, use_gitignore: bool, exclude_dirs: set) -
         try:
             # Check if git is installed and this is a repo
             subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'], cwd=start_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            # Determine the actual repository root for git commands
+            repo_root = subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True, encoding='utf-8', errors='replace').strip()
             
             # List tracked and untracked files, respecting .gitignore
             cmd = ['git', 'ls-files', '-c', '-o', '--exclude-standard']
             result = subprocess.run(cmd, cwd=start_path, capture_output=True, text=True, check=True)
+            # Use --full-name to get paths relative to the repository root
+            # Use -z for null-terminated output to handle filenames with spaces/newlines
+            # Pass start_path as an argument to git ls-files to limit the scope
+            cmd = ['git', 'ls-files', '-c', '-o', '--exclude-standard', '--full-name', '-z', start_path]
+            result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, check=True, encoding='utf-8', errors='replace')
             
             for line in result.stdout.splitlines():
-                # Check if any part of the path (dir or filename) is excluded
-                parts = line.replace('\\', '/').split('/')
-                if any(part in exclude_dirs for part in parts):
-                    continue
+                git_files = [f for f in result.stdout.split('\0') if f]
+                
+                if git_files: # Only use git results if it actually found files
+                    for line in git_files:
+                    # Check if any part of the path (dir or filename) is excluded
+                        parts = line.replace('\\', '/').split('/')
+                        if any(part in exclude_dirs for part in parts):
+                            continue
 
                 full_path = os.path.join(start_path, line)
+                full_path = os.path.join(repo_root, line) # git ls-files gives paths relative to repo root
                 if os.path.isfile(full_path):
                     file_list.append(full_path)
-            return file_list
+                    return file_list # Return files found by git
+            # If git_files is empty, fall through to os.walk
         except (FileNotFoundError, subprocess.CalledProcessError):
             pass # Fallback
 
@@ -150,7 +207,12 @@ def get_files_to_scan(start_path: str, use_gitignore: bool, exclude_dirs: set) -
             
     return file_list
 
-def scan_git_history(start_path: str, patterns: Dict[str, re.Pattern]) -> List[Tuple[str, int, str, str]]:
+def scan_git_history(
+    start_path: str,
+    repo_root: str,
+    patterns: Dict[str, re.Pattern],
+    reveal_matches: bool = False,
+) -> List[Tuple[str, int, str, str]]:
     """Scans git history (patches) for sensitive data."""
     findings = []
     print("Scanning git history (this may take a moment)...")
@@ -171,14 +233,20 @@ def scan_git_history(start_path: str, patterns: Dict[str, re.Pattern]) -> List[T
             content = line[1:]
             for pattern_name, regex in patterns.items():
                 if regex.search(content):
-                    findings.append((f"COMMIT: {current_commit}", 0, pattern_name, content.strip()[:100]))
+                    findings.append((f"COMMIT: {current_commit}", 0, pattern_name, content.strip() if reveal_matches else "[redacted]"))
                     
         process.wait()
     except Exception as e:
         print(f"Error scanning git history: {e}")
     return findings
 
-def scan_git_diff(start_path: str, patterns: Dict[str, re.Pattern], staged: bool = False) -> List[Tuple[str, int, str, str]]:
+def scan_git_diff(
+    start_path: str,
+    repo_root: str,
+    patterns: Dict[str, re.Pattern],
+    staged: bool = False,
+    reveal_matches: bool = False,
+) -> List[Tuple[str, int, str, str]]:
     """Scans git diffs (staged or unstaged) for sensitive data."""
     findings = []
     diff_type = "staged" if staged else "unstaged"
@@ -190,6 +258,7 @@ def scan_git_diff(start_path: str, patterns: Dict[str, re.Pattern], staged: bool
             cmd.append('--cached')
         
         process = subprocess.Popen(cmd, cwd=start_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+        process = subprocess.Popen(cmd, cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
         
         current_file = "Unknown"
         for line in process.stdout:
@@ -204,19 +273,26 @@ def scan_git_diff(start_path: str, patterns: Dict[str, re.Pattern], staged: bool
                 if len(content) > 500: continue
                 for pattern_name, regex in patterns.items():
                     if regex.search(content):
-                        findings.append((f"DIFF ({diff_type}): {current_file}", 0, pattern_name, content.strip()[:100]))
+                        findings.append((f"DIFF ({diff_type}): {current_file}", 0, pattern_name, content.strip() if reveal_matches else "[redacted]"))
         process.wait()
     except Exception as e:
         print(f"Error scanning git diff: {e}")
     return findings
 
-def scan_git_commit(start_path: str, commit_hash: str, patterns: Dict[str, re.Pattern]) -> List[Tuple[str, int, str, str]]:
+def scan_git_commit(
+    start_path: str,
+    repo_root: str,
+    commit_hash: str,
+    patterns: Dict[str, re.Pattern],
+    reveal_matches: bool = False,
+) -> List[Tuple[str, int, str, str]]:
     """Scans a specific git commit for sensitive data."""
     findings = []
     print(f"Scanning commit {commit_hash}...")
-    try:
+    try: # Use repo_root for cwd
         cmd = ['git', 'show', '--unified=0', commit_hash]
         process = subprocess.Popen(cmd, cwd=start_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+        process = subprocess.Popen(cmd, cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
         
         current_file = "Unknown"
         for line in process.stdout:
@@ -229,7 +305,7 @@ def scan_git_commit(start_path: str, commit_hash: str, patterns: Dict[str, re.Pa
                 if len(content) > 500: continue
                 for pattern_name, regex in patterns.items():
                     if regex.search(content):
-                        findings.append((f"COMMIT: {commit_hash[:7]} ({current_file})", 0, pattern_name, content.strip()[:100]))
+                        findings.append((f"COMMIT: {commit_hash[:7]} ({current_file})", 0, pattern_name, content.strip() if reveal_matches else "[redacted]"))
         process.wait()
         if process.returncode != 0:
             stderr_output = process.stderr.read()
@@ -239,7 +315,12 @@ def scan_git_commit(start_path: str, commit_hash: str, patterns: Dict[str, re.Pa
         print(f"Error scanning commit {commit_hash}: {e}")
     return findings
 
-def scan_git_stashes(start_path: str, patterns: Dict[str, re.Pattern]) -> List[Tuple[str, int, str, str]]:
+def scan_git_stashes(
+    start_path: str,
+    repo_root: str,
+    patterns: Dict[str, re.Pattern],
+    reveal_matches: bool = False,
+) -> List[Tuple[str, int, str, str]]:
     """Scans all git stashes for sensitive data."""
     findings = []
     print("Scanning git stashes...")
@@ -270,7 +351,7 @@ def scan_git_stashes(start_path: str, patterns: Dict[str, re.Pattern]) -> List[T
                     if len(content) > 500: continue
                     for pattern_name, regex in patterns.items():
                         if regex.search(content):
-                            findings.append((f"STASH: {stash_ref} ({current_file})", 0, pattern_name, content.strip()[:100]))
+                            findings.append((f"STASH: {stash_ref} ({current_file})", 0, pattern_name, content.strip() if reveal_matches else "[redacted]"))
             process.wait()
     except Exception as e:
         print(f"Error scanning git stashes: {e}")
@@ -279,13 +360,14 @@ def scan_git_stashes(start_path: str, patterns: Dict[str, re.Pattern]) -> List[T
 def find_sensitive_data(
     files: List[str],
     all_patterns: Dict[str, re.Pattern],
+    reveal_matches: bool = False,
 ) -> List[Tuple[str, int, str, str]]:
     """Scans the provided list of files."""
     findings = []
     
     for file_path in files:
         if file_path.lower().endswith('.zip'):
-            findings.extend(scan_zip_archive(file_path, all_patterns))
+            findings.extend(scan_zip_archive(file_path, all_patterns, reveal_matches=reveal_matches))
             continue
 
         if not is_text_file(file_path):
@@ -300,7 +382,7 @@ def find_sensitive_data(
                     for pattern_name, regex in all_patterns.items():
                         for match in regex.finditer(line):
                             findings.append(
-                                (file_path, i, pattern_name, match.group(0))
+                                (file_path, i, pattern_name, match.group(0) if reveal_matches else f"[{len(match.group(0))} chars redacted]")
                             )
         except Exception:
             pass
@@ -325,7 +407,15 @@ def main():
     parser.add_argument("--staged", action="store_true", help="Scan staged git changes.")
     parser.add_argument("--commit", help="Scan a specific git commit hash.")
     parser.add_argument("--git-stash", action="store_true", help="Scan all git stashes.")
+    parser.add_argument(
+        "--stream-sensitive-data",
+        action="store_true",
+        help="Print raw matched values. Interactive-only and requires explicit confirmation.",
+    )
     args = parser.parse_args()
+
+    if args.stream_sensitive_data and not confirm_sensitive_stream_mode():
+        sys.exit(2)
 
     # --- Build Patterns ---
     custom_patterns = {}
@@ -374,29 +464,36 @@ def main():
     print(f"Gathering files in {args.path}...")
     files = get_files_to_scan(args.path, use_gitignore=not args.no_gitignore, exclude_dirs=exclude_dirs)
     print(f"Scanning {len(files)} files...")
-    findings.extend(find_sensitive_data(files, all_patterns))
+    findings.extend(find_sensitive_data(files, all_patterns, reveal_matches=args.stream_sensitive_data))
 
     if args.history:
-        findings.extend(scan_git_history(args.path, all_patterns))
+        findings.extend(scan_git_history(args.path, all_patterns, reveal_matches=args.stream_sensitive_data))
+        findings.extend(scan_git_history(repo_root, all_patterns, reveal_matches=args.stream_sensitive_data))
 
     if args.diff:
-        findings.extend(scan_git_diff(args.path, all_patterns, staged=False))
+        findings.extend(scan_git_diff(args.path, all_patterns, staged=False, reveal_matches=args.stream_sensitive_data))
+        findings.extend(scan_git_diff(repo_root, all_patterns, staged=False, reveal_matches=args.stream_sensitive_data))
 
     if args.staged:
-        findings.extend(scan_git_diff(args.path, all_patterns, staged=True))
+        findings.extend(scan_git_diff(args.path, all_patterns, staged=True, reveal_matches=args.stream_sensitive_data))
+        findings.extend(scan_git_diff(repo_root, all_patterns, staged=True, reveal_matches=args.stream_sensitive_data))
 
     if args.commit:
-        findings.extend(scan_git_commit(args.path, args.commit, all_patterns))
+        findings.extend(scan_git_commit(args.path, args.commit, all_patterns, reveal_matches=args.stream_sensitive_data))
+        findings.extend(scan_git_commit(repo_root, args.commit, all_patterns, reveal_matches=args.stream_sensitive_data))
 
     if args.git_stash:
-        findings.extend(scan_git_stashes(args.path, all_patterns))
+        findings.extend(scan_git_stashes(args.path, all_patterns, reveal_matches=args.stream_sensitive_data))
+        findings.extend(scan_git_stashes(repo_root, all_patterns, reveal_matches=args.stream_sensitive_data))
 
     # --- Report Findings ---
     if findings:
         print("\nSensitive data found:")
-        for location, line_num, pattern, match in findings:
+        for location, line_num, pattern, match_value in findings:
             loc_str = f"{location}:{line_num}" if line_num > 0 else location
-            print(f"  - {loc_str} [{pattern}]\n    Match: {match[:60]}...")
+            print(f"  - {loc_str} [{pattern}]")
+            if args.stream_sensitive_data:
+                print(f"    Match: {match_value}")
     else:
         print("\nNo sensitive data found.")
 
