@@ -88,11 +88,13 @@ def main():
     parser.add_argument("--co", help="Company Override")
     parser.add_argument("--out", help="Output filename")
     parser.add_argument("--debug", action="store_true")
+    KineticBaseClient.add_file_resolution_args(parser)
     args = parser.parse_args()
 
     try:
         # 1. Initialize the service
         service = KineticBOReaderService(args.env, args.user, debug=args.debug)
+        service.configure_file_resolution_from_args(args)
         
         # 2. Build request dict
         request_dict = {'whereClause': args.where}
@@ -109,6 +111,7 @@ def main():
         # 4. Save to file
         records = result.get('value', [])
         out_file = args.out or f"{args.service.replace('.', '_')}_result.json"
+        out_file = service.resolve_output_path(out_file, conflict_resolution="timestamp")
         with open(out_file, 'w', encoding='utf-8') as f:
             json.dump(records, f, indent=4)
             
