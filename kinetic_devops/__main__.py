@@ -4,6 +4,9 @@ from .auth import main as auth_main
 from .baq import main as baq_main
 from .metafx import main as metafx_main
 from .efx import main as efx_main
+from .export_all import main as export_all_main
+from .solutions import main as solutions_main
+from .zdatatable import main as zdatatable_main
 from .find_sensitive_data import main as find_sensitive_data_main
 from .report_service import main as report_main
 
@@ -15,6 +18,9 @@ def main():
     subparsers.add_parser("auth", help="Manage server configs and tokens")
     subparsers.add_parser("baq", help="Execute BAQ queries")
     subparsers.add_parser("meta", help="MetaFX tools (fetch UI metadata, core layer import/delete operations)")
+    subparsers.add_parser("export", help="Export everything from an ExportAllTheThings EFx library")
+    subparsers.add_parser("solutions", help="Backup and recreate Solution Workbench definitions")
+    subparsers.add_parser("zdatatable", help="Detect/sync UD column drift from ZDataTable XML")
     subparsers.add_parser("find", help="Find sensitive data in the project")
     subparsers.add_parser("efx", help="Execute Epicor Functions")
     subparsers.add_parser("report", help="Upload and Extract Reports")
@@ -36,6 +42,12 @@ def main():
         baq_main()
     elif args.tool == "meta":
         metafx_main()
+    elif args.tool == "export":
+        export_all_main()
+    elif args.tool == "solutions":
+        solutions_main()
+    elif args.tool == "zdatatable":
+        zdatatable_main()
     elif args.tool == "find":
         find_sensitive_data_main()
     elif args.tool == "efx":
