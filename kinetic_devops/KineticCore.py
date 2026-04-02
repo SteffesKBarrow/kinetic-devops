@@ -5,10 +5,13 @@ import pickle
 import base64
 import re
 import os
+import shutil
+from datetime import datetime, timezone
 import getpass
 import keyring
 from typing import Optional, Dict, Set
 from urllib.parse import urlsplit, urlunsplit
+from .fs_ops import safe_atomic_write_text, describe_overwrite_risk
 
 class KineticCore:
     def __init__(self, debug: bool = False):
@@ -127,8 +130,25 @@ class KineticCore:
         # Update Keyring and Disk
         keyring.set_password("KineticSDK", "Sentinel", config_hash)
         keyring.set_password("KineticSDK", "Integrity", integrity_hash)
-        with open(self._cache_file, "w") as f:
-            f.write(full_blob)
+
+        # Selected state/cache safeguard: if cache file is in-repo and risky,
+        # preserve a timestamped backup before atomic replacement.
+        if os.path.exists(self._cache_file):
+            try:
+                risk = describe_overwrite_risk(self._cache_file)
+                in_repo = bool(risk.get("in_repo"))
+                risk_level = str(risk.get("risk_level", "none")).lower()
+                if in_repo and risk_level in {"high", "critical"}:
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                    backup_path = f"{self._cache_file}.{ts}.bak"
+                    shutil.copy2(self._cache_file, backup_path)
+                    if self.debug:
+                        print(f"⚠️ Cache overwrite safeguard: backup created at {backup_path}")
+            except Exception:
+                if self.debug:
+                    print("⚠️ Cache overwrite safeguard skipped due to backup error")
+
+        safe_atomic_write_text(self._cache_file, full_blob)
             
         self._hex_scrambled_blob = payload_hex
 
