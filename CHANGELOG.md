@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a2] - 2026-04-02
+
+**Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
+
+### Added
+- Console script entry point for direct CLI invocation: `kinetic-devops`
+- Regression tests for CLI entry routing and submodule warning behavior
+- Definition of Done release gates for regression testing and practical CI/CD controls
+
+### Changed
+- Refactored `kinetic_devops.__main__` to cleanly dispatch subcommands via direct function calls
+- Updated package imports to lazy loading to prevent submodule preload side effects
+
+### Fixed
+- Removed RuntimeWarning during `python -m kinetic_devops.<module>` invocation in normal CLI help flow
+
 ## [0.1.0a1] - 2026-03-03
 
 **Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
