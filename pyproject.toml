@@ -30,6 +30,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 
+[project.scripts]
+kinetic-devops = "kinetic_devops.__main__:main"
+
 [tool.setuptools]
 include-package-data = true
 

@@ -1,5 +1,6 @@
 import sys
 import argparse
+from typing import Callable, Sequence
 from .auth import main as auth_main
 from .baq import main as baq_main
 from .metafx import main as metafx_main
@@ -9,12 +10,27 @@ from .solutions import main as solutions_main
 from .zdatatable import main as zdatatable_main
 from .find_sensitive_data import main as find_sensitive_data_main
 from .report_service import main as report_main
+import importlib.metadata
 
-def main():
+
+TOOLS: dict[str, Callable[[], None]] = {
+    "auth": auth_main,
+    "baq": baq_main,
+    "meta": metafx_main,
+    "export": export_all_main,
+    "solutions": solutions_main,
+    "zdatatable": zdatatable_main,
+    "find": find_sensitive_data_main,
+    "efx": efx_main,
+    "report": report_main,
+}
+
+
+def _build_parser(version: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Kinetic SDK CLI Router")
+    parser.add_argument("-v", "--version", action="version", version=f"Kinetic SDK v{version}")
     subparsers = parser.add_subparsers(dest="tool", help="Select the SDK tool to run")
 
-    # Mapping sub-commands to the main functions of your modules
     subparsers.add_parser("auth", help="Manage server configs and tokens")
     subparsers.add_parser("baq", help="Execute BAQ queries")
     subparsers.add_parser("meta", help="MetaFX tools (fetch UI metadata, core layer import/delete operations)")
@@ -24,36 +40,39 @@ def main():
     subparsers.add_parser("find", help="Find sensitive data in the project")
     subparsers.add_parser("efx", help="Execute Epicor Functions")
     subparsers.add_parser("report", help="Upload and Extract Reports")
+    return parser
 
-    # If no arguments, print help
-    if len(sys.argv) == 1:
+
+def _dispatch_tool(tool_name: str, tool_args: Sequence[str]) -> None:
+    old_argv = sys.argv
+    try:
+        # Delegate directly to the submodule entrypoint to avoid runpy RuntimeWarning behavior.
+        sys.argv = [f"{old_argv[0]} {tool_name}", *tool_args]
+        TOOLS[tool_name]()
+    finally:
+        sys.argv = old_argv
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        __version__ = importlib.metadata.version("kinetic-devops")
+    except importlib.metadata.PackageNotFoundError:
+        __version__ = "alpha-dev"
+
+    args = list(argv) if argv is not None else sys.argv[1:]
+    parser = _build_parser(__version__)
+
+    if not args:
         parser.print_help()
-        sys.exit(1)
+        return 1
 
-    # Parse only the first argument to determine which tool to use
-    args, remaining_args = parser.parse_known_args()
+    if args[0] in TOOLS:
+        _dispatch_tool(args[0], args[1:])
+        return 0
 
-    # Rewrite sys.argv so the sub-module's argparse works correctly
-    sys.argv = [sys.argv[0]] + remaining_args
-
-    if args.tool == "auth":
-        auth_main()
-    elif args.tool == "baq":
-        baq_main()
-    elif args.tool == "meta":
-        metafx_main()
-    elif args.tool == "export":
-        export_all_main()
-    elif args.tool == "solutions":
-        solutions_main()
-    elif args.tool == "zdatatable":
-        zdatatable_main()
-    elif args.tool == "find":
-        find_sensitive_data_main()
-    elif args.tool == "efx":
-        efx_main()
-    elif args.tool == "report":
-        report_main()
+    # This handles router-level arguments like --version/--help and unknown command errors.
+    parser.parse_args(args)
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

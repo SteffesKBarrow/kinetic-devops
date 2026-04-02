@@ -7,26 +7,37 @@ except ImportError:
     print("To install the required packages, run: pip install -r requirements.txt")
     exit(1)
 
-from .auth import KineticConfigManager
-from .base_client import KineticBaseClient
-from .metafx import KineticMetafetcher
-from .baq import KineticBAQService
-from .boreader import KineticBOReaderService
-from .file_service import KineticFileService
-from .report_service import KineticReportService
-from . import find_sensitive_data
+from importlib import import_module
+
+
+_LAZY_ATTRS = {
+    "KineticConfigManager": (".auth", "KineticConfigManager"),
+    "KineticBaseClient": (".base_client", "KineticBaseClient"),
+    "KineticMetafetcher": (".metafx", "KineticMetafetcher"),
+    "KineticBAQService": (".baq", "KineticBAQService"),
+    "KineticBOReaderService": (".boreader", "KineticBOReaderService"),
+    "KineticFileService": (".file_service", "KineticFileService"),
+    "KineticReportService": (".report_service", "KineticReportService"),
+    "KineticExportAllService": (".export_all", "KineticExportAllService"),
+    "KineticSolutionService": (".solutions", "KineticSolutionService"),
+    "KineticZDataTableService": (".zdatatable", "KineticZDataTableService"),
+}
 
 
 def __getattr__(name):
-    if name == "KineticExportAllService":
-        from .export_all import KineticExportAllService
-        return KineticExportAllService
-    if name == "KineticSolutionService":
-        from .solutions import KineticSolutionService
-        return KineticSolutionService
-    if name == "KineticZDataTableService":
-        from .zdatatable import KineticZDataTableService
-        return KineticZDataTableService
+    if name == "find_sensitive_data":
+        module = import_module(".find_sensitive_data", __name__)
+        globals()[name] = module
+        return module
+
+    target = _LAZY_ATTRS.get(name)
+    if target is not None:
+        module_name, attr_name = target
+        module = import_module(module_name, __name__)
+        value = getattr(module, attr_name)
+        globals()[name] = value
+        return value
+
     raise AttributeError(f"module 'kinetic_devops' has no attribute '{name}'")
 
 __all__ = [
