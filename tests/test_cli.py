@@ -22,7 +22,15 @@ class TestServiceCLI(unittest.TestCase):
     
     def test_baq_cli_help(self):
         """Test kinetic_devops.baq --help."""
-        self._test_cli_help("kinetic_devops.baq")
+        result = subprocess.run(
+            [sys.executable, "-m", "kinetic_devops.baq", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        self.assertEqual(result.returncode, 0, "kinetic_devops.baq --help failed")
+        self.assertIn("usage:", result.stdout, "kinetic_devops.baq help missing usage")
+        self.assertNotIn("RuntimeWarning", result.stderr)
     
     def test_boreader_cli_help(self):
         """Test kinetic_devops.boreader --help."""

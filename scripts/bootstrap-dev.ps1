@@ -172,8 +172,12 @@ function python3 {
 }
 
 function pip {
-    Write-Host "STOP: Use 'uv add' (projects) or 'uv pip' (pip-compat) to manage dependencies." -ForegroundColor Yellow
-    Write-Host ("Redirecting to: uv pip {0}" -f ($args -join ' ')) -ForegroundColor Gray
+    if ($args -contains "install") {
+        Write-Host "ADVICE: For projects with a pyproject.toml, use 'uv add <package>' instead of pip install." -ForegroundColor Cyan
+    } else {
+        Write-Host "STOP: Use 'uv add' (projects) or 'uv pip' (pip-compat) to manage dependencies." -ForegroundColor Yellow
+    }
+    Write-Host ("Executing: uv pip {0}" -f ($args -join ' ')) -ForegroundColor Gray
     uv pip @args
 }
 
@@ -195,6 +199,7 @@ if (-not $global:DevTrustNoticeShown) {
 '@
 
         $markerBegin = "# --- Core Dev Bootstrap (2026) ---"
+        $markerEnd = "# --- End Core Dev Bootstrap (2026) ---"
 
         foreach ($p in Get-TargetProfilePaths) {
             $dir = Split-Path -Path $p
@@ -203,16 +208,28 @@ if (-not $global:DevTrustNoticeShown) {
             if (Test-Path $p) {
                 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
                 Copy-Item -Path $p -Destination ($p + ".bak_" + $stamp) -Force
+                $content = Get-Content -Path $p
             } else {
                 New-Item -Type File -Path $p -Force | Out-Null
+                $content = @()
             }
 
-            $already = Select-String -Path $p -Pattern $markerBegin -SimpleMatch -Quiet
-            if (-not $already) {
-                Add-Content -Path $p -Value "`n$ProfileBlock`n"
-                Write-Host "Profile updated: $p" -ForegroundColor Gray
+            # Find existing block to make the script safely re-runnable for updates
+            $beginLine = -1
+            $endLine = -1
+            for ($i = 0; $i -lt $content.Length; $i++) {
+                if ($content[$i] -match '--- Core Dev Bootstrap \(') { $beginLine = $i }
+                if ($content[$i] -match '--- End Core Dev Bootstrap \(') { $endLine = $i }
+            }
+
+            if ($beginLine -ge 0 -and $endLine -gt $beginLine) {
+                Write-Host "Updating existing bootstrap block in profile: $p" -ForegroundColor Gray
+                $preBlock = $content[0..($beginLine-1)]
+                $postBlock = $content[($endLine+1)..$content.GetUpperBound(0)]
+                ($preBlock + $ProfileBlock.Split([System.Environment]::NewLine) + $postBlock) | Set-Content -Path $p
             } else {
-                Write-Host "Profile already contains bootstrap block: $p" -ForegroundColor DarkGray
+                Add-Content -Path $p -Value "`n$ProfileBlock`n"
+                Write-Host "Adding new bootstrap block to profile: $p" -ForegroundColor Gray
             }
         }
     } else {

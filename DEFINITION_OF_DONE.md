@@ -1,128 +1,100 @@
 # Definition of Done
 
-**kinetic-devops v0.1.0a1** is considered "done" and ready for public release when it meets the following criteria:
+This document defines release gates for kinetic-devops.
 
-## ✅ Acceptance Criteria
+A change is "Done" only when all Required Now gates pass and any deferred items are documented in the PR/release notes.
 
-### 1. **Usable**
-- CLI framework functional with working examples
-- Auto-discovery and function loader working
-- All documented commands execute successfully
-- No broken imports or missing dependencies
+## Release Gates (Required Now)
 
-**Verified:** ✅  
-- Validation script passes 5/5 checks
-- loader.py successfully discovers and runs example functions
-- CLI entry points functional (auth, baq, report, etc.)
+### 1. Product and Documentation Readiness
+- Feature behavior matches documented usage in README and command help.
+- New or changed CLI behavior includes at least one usage example.
+- Changelog entry exists for externally visible behavior changes.
+- No broken imports, command aliases, or documented command paths.
 
-### 2. **Useful**
-- Solves real, legitimate business problems
-- Provides clear value over manual processes
-- Reduces boilerplate and development time
-- Proven through actual usage
+### 2. Regression Testing
+- Existing tests pass for impacted areas.
+- At least one regression test is added for each bug fix that changed behavior.
+- Entrypoint and routing changes must include regression coverage for:
+	- top-level router behavior
+	- independently runnable submodules (`python -m kinetic_devops.<module>`)
+	- warning regressions (for example, RuntimeWarning reintroduction)
+- New tests must run in CI-compatible non-interactive mode.
 
-**Verified:** ✅  
-- Addresses Epicor Kinetic environment management gaps
-- Tested with real environment workflows
-- Credentials management, data migration, configuration sync all functional
+### 3. Packaging and Installability
+- Package builds successfully as both sdist and wheel.
+- Distribution metadata validates via twine check.
+- Console entry point is verified (`kinetic-devops`).
+- Module entry point is verified (`python -m kinetic_devops`).
 
-### 3. **Value-Added**
-- Provides features not readily available elsewhere
-- Extensible for custom use cases
-- Well-integrated with Epicor Kinetic API
-- Saves developers significant time
+### 4. CI/CD Baseline
+- GitHub Actions build pipeline runs successfully for release tags.
+- PyPI trusted publishing configuration is valid and operational.
+- Release tag pattern is respected (`v*`).
+- Protected branch policy is respected (merge via PR unless emergency override).
 
-**Verified:** ✅  
-- Multi-environment credential management with keyring encryption
-- BaseClient abstraction for consistent patterns
-- Service-based architecture (BAQ, Report, Tax, File management)
-- Project template and loader for rapid extension
+### 5. Security and Operational Hygiene
+- No secrets or credential artifacts added to tracked files.
+- .gitignore and scanning posture are unchanged or improved.
+- Any known security or redaction gaps are documented in changelog/release notes.
 
-### 4. **Important**
-- Addresses a critical or high-frequency need
-- Justifies open-source investment
-- Has real dependencies/stakeholders
-- Solves problems at organizational level
+## Minimum Evidence Required In PR
 
-**Verified:** ✅  
-- Environment management is core DevOps requirement
-- Multi-company/client support addresses enterprise needs
-- Automation patterns save hours per week in manual work
-- Pattern proven by ExportAllTheThings precedent
+Every PR that changes runtime behavior should include:
+- Test evidence (command + pass result)
+- Build evidence (`uv build`)
+- Metadata evidence (`uvx twine check dist/*`)
+- CLI smoke evidence for changed commands
 
-### 5. **Ready for Developers**
-- Complete project template included
-- Working examples for all major patterns
-- Clear onboarding/quickstart documentation
-- Extension points clearly documented
+## Deferred Gates (Adopt Next)
 
-**Verified:** ✅  
-- `examples/project_template/` with complete folder structure
-- Examples: pull_customers, validate_data, dimension_layer, sales_reporting, po_approval, sync_companies
-- QUICKSTART.md (5-minute getting started)
-- README.md (comprehensive guide)
-- loader.py with auto-discovery and metadata
+These are high-value and low-friction additions:
 
-### 6. **Validated** ⭐ *NEW*
-- All automated checks pass
-- No critical errors or warnings
-- Security audit clean
-- Tests passing (known issues documented)
-- Package metadata correct
+1. CI matrix smoke tests
+- Run core test suite on Python 3.10, 3.12, and latest.
 
-**Verified:** ✅  
-- Validation script: 5/5 checks passed
-- Test suite: 17/19 passing (2 pre-existing redaction edge cases documented)
-- Security audit: No credentials, .gitignore sufficient, data handling clean
-- pyproject.toml: Proper version, metadata, classifiers
-- .gitignore: Excludes sensitive files, includes projects/ folder
+2. PR quality gates
+- Require one approving review on release-impacting changes.
+- Require passing checks before merge.
 
----
+3. Automated version guard
+- Fail release workflow if project version and tag do not match.
 
-## Release Checklist
+4. Artifact retention and provenance
+- Retain build artifacts for troubleshooting.
+- Keep attestations enabled in publish action.
 
-Before publishing v0.1.0a1:
+5. Test selection policy
+- Maintain a small required regression subset for fast PR checks.
+- Keep full suite on release tags.
 
-- [x] Rename complete (kinetic_sdk → kinetic_devops)
-- [x] All imports updated (43+ references)
-- [x] Tests passing (17/19, known issues documented)
-- [x] Security audit complete and clean
-- [x] README.md enhanced with alpha disclaimer
-- [x] CHANGELOG.md created with release notes
-- [x] pyproject.toml updated (v0.1.0a1, classifiers)
-- [x] Module docstrings added/enhanced
-- [x] Project template created with examples
-- [x] Loader script functional
-- [x] Documentation complete (README, QUICKSTART, ARCHITECTURE)
-- [x] Validation passing (5/5 checks)
-- [x] Definition of Done documented
-
----
-
-## Running Validation
+## Validation Commands
 
 ```bash
-# Quick validation (all checks)
+# full local validation
 python scripts/validate.py
 
-# Test suite
+# targeted and full tests
+python -m unittest tests.test_entry_router tests.test_cli
 python -m tests.test_runner
 
-# Project template loader
-cd examples/project_template
-python loader.py --validate
+# packaging checks
+uv build
+uvx twine check dist/*
+
+# entrypoint smoke
+python -m kinetic_devops --help
+kinetic-devops --help
 ```
 
-## Future Enhancements (Beyond Alpha)
+## Definition of Done Decision
 
-Potential DoD additions for stable releases:
-- **Tested**: Real-world feedback from users
-- **Supported**: Issue tracking, response guidelines
-- **Documented**: API reference, architectural decision records
-- **Stable API**: Backwards compatibility guarantees
-- **Performance**: Benchmark and optimization targets
+Release is approved when:
+- All Required Now gates pass.
+- Deferred Minimal-Effort Upgrades (if any) are explicitly tracked.
+- Release notes document known limitations and risk.
 
 ---
 
-**Last Validated:** March 3, 2026  
-**Status:** ✅ READY FOR RELEASE (v0.1.0a1)
+Last Updated: April 2, 2026
+Current Stage: Alpha hardening with regression-first release discipline
