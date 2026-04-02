@@ -1,8 +1,10 @@
 # Git ignore file for project 
 Data/
 bin/
+exports/
 temp/
 tmp/
+exports/
 projects/
 
 # IDE specific files
@@ -51,6 +53,8 @@ logs/*.err
 *.log
 *.out
 *.err
+*.bak_*
+BootstrapLogs/
 
 # PyInstaller
 *.manifest
@@ -90,9 +94,14 @@ git_lost+found/
 *_escaped.json
 *_escaped.jsonc
 
+## Debug and Content files
+#*.content.jsonc
+#*.content.json
+#*.debug.json
+#*.tmp.json
+
 # uv specific
 .uv/
 
 # Specific to your local workspace
 .python-version
-

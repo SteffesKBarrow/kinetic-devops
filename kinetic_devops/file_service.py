@@ -284,11 +284,13 @@ def main():
     parser.add_argument("--dms-type-id", help="DMS Type ID (for set-default)")
     parser.add_argument("--out", help="Output filename")
     parser.add_argument("--debug", action="store_true")
+    KineticBaseClient.add_file_resolution_args(parser)
     args = parser.parse_args()
 
     try:
         # 1. Initialize the service
         service = KineticFileService(args.env, args.user, debug=args.debug)
+        service.configure_file_resolution_from_args(args)
         
         # 2. Execute action
         if args.action == 'list':
@@ -298,6 +300,7 @@ def main():
                 sys.exit(1)
             
             out_file = args.out or "dms_storage_types.json"
+            out_file = service.resolve_output_path(out_file, conflict_resolution="timestamp")
             with open(out_file, 'w', encoding='utf-8') as f:
                 json.dump(types, f, indent=4)
             print(f"✅ Success: {len(types)} DMS storage type(s) saved to {out_file}")
@@ -309,6 +312,7 @@ def main():
                 sys.exit(1)
             
             out_file = args.out or "file_service_status.json"
+            out_file = service.resolve_output_path(out_file, conflict_resolution="timestamp")
             with open(out_file, 'w', encoding='utf-8') as f:
                 json.dump(status, f, indent=4)
             

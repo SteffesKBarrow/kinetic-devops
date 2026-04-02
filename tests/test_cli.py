@@ -32,6 +32,14 @@ class TestServiceCLI(unittest.TestCase):
         """Test kinetic_devops.file_service --help."""
         self._test_cli_help("kinetic_devops.file_service")
 
+    def test_export_all_cli_help(self):
+        """Test kinetic_devops.export_all --help."""
+        self._test_cli_help("kinetic_devops.export_all")
+
+    def test_solutions_cli_help(self):
+        """Test kinetic_devops.solutions --help."""
+        self._test_cli_help("kinetic_devops.solutions")
+
 
 if __name__ == '__main__':
     unittest.main()

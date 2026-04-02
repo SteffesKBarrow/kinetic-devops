@@ -42,11 +42,13 @@ def main():
     parser.add_argument("--out", help="Output filename (for file/zip responses)")
     parser.add_argument("--decode", action="store_true", help="Decode the output as Base64 (auto-detected for ZipBase64)")
     parser.add_argument("--debug", action="store_true")
+    KineticBaseClient.add_file_resolution_args(parser)
     
     args = parser.parse_args()
 
     try:
         service = KineticEFxService(args.env, args.user, debug=args.debug)
+        service.configure_file_resolution_from_args(args)
         
         try:
             input_data = json.loads(args.input)
@@ -69,6 +71,7 @@ def main():
                 file_data = output_content
                 mode = "w"
                 
+            args.out = service.resolve_output_path(args.out, conflict_resolution="timestamp")
             with open(args.out, mode) as f:
                 f.write(file_data)
             print(f"✅ Output saved to {args.out}")

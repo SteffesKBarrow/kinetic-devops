@@ -11,12 +11,16 @@ Run all tests with validation:
 python -m tests.test_runner
 # or
 python tests/test_runner.py
+# or
+python -m kinetic_devops.cli.test_runner
 ```
 
 Run specific test module:
 ```bash
 python -m unittest tests.test_imports
 python -m unittest tests.test_cli
+python -m unittest tests.test_redaction
+python -m unittest tests.test_base_client_redaction
 ```
 
 Run with verbose output:
@@ -28,7 +32,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 Quick validation of SDK environment:
 ```bash
-python -m kinetic_devops.cli.validate
+python scripts/validate.py
 ```
 
 ## Test Runner
@@ -38,6 +42,8 @@ The canonical test runner is `tests/test_runner.py`, which:
 - Discovers and runs all tests under `tests/test_*.py`.
 - Logs results to `tests/test_results.log`.
 - Returns exit code 0 on success, non-zero on failure (useful for CI/CD).
+
+The CLI module `python -m kinetic_devops.cli.test_runner` runs the same test discovery and result reporting flow.
 
 ## Test Results
 
@@ -54,20 +60,32 @@ All test results are logged to `tests/test_results.log` for CI/CD integration.
 - CLI help output for each service module
 - Argument parser functionality
 
+### test_redaction.py
+- Heuristic redaction behavior for sensitive keys
+- Escaped nested JSON redaction paths
+- Whitespace and formatting variation handling
+
+### test_base_client_redaction.py
+- `KineticCore.log_wire()` zero-trust output redaction
+- `KineticBaseClient.execute_request()` success and failure wire-log behavior
+- Runtime identity and URL sanitization in error paths
+
+### sdk_kinetic/test_basic.py
+- Basic package smoke test for importability
+
 ## Pre-commit Hook
 
 To enable pre-commit testing:
 
 **Windows (PowerShell):**
 ```powershell
-Copy-Item .git/hooks/pre-commit .git/hooks/pre-commit.py
-# Then configure git to use PowerShell or Python to run hooks
+./scripts/install-hook.ps1
 ```
 
 **Linux/macOS:**
 ```bash
-chmod +x .git/hooks/pre-commit
-git config core.hooksPath .git/hooks
+chmod +x scripts/hooks/pre-commit
+git config core.hooksPath scripts/hooks
 ```
 
 The pre-commit hook will automatically run the test suite before allowing commits.
@@ -85,9 +103,12 @@ The test runner includes automatic environment validation that checks:
 
 | Module | Tests | Status |
 |--------|-------|--------|
-| test_imports | 12 | All Pass |
-| test_cli | 4 | All Pass |
-| **Total** | **14** | **All Pass** |
+| test_base_client_redaction | 3 | All Pass |
+| test_imports | 8 | All Pass |
+| test_cli | 3 | All Pass |
+| test_redaction | 7 | All Pass |
+| sdk_kinetic/test_basic | 1 | All Pass |
+| **Total** | **22** | **All Pass** |
 
 ## CI Integration
 
@@ -96,5 +117,5 @@ Test results are logged to `tests/test_results.log` and can be parsed by CI syst
 Example GitHub Actions integration:
 ```yaml
 - name: Run Kinetic SDK Tests
-  run: python -m kinetic_devops.cli.test_runner
+  run: python tests/test_runner.py
 ```

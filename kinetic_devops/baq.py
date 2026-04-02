@@ -53,11 +53,13 @@ def main():
     parser.add_argument("--co", help="Company Override")
     parser.add_argument("--plant", help="Plant ID")
     parser.add_argument("--debug", action="store_true")
+    KineticBaseClient.add_file_resolution_args(parser)
     args = parser.parse_args()
 
     try:
         # 1. Initialize the service (Inherits env/user selection from Base)
         service = KineticBAQService(args.env, args.user)
+        service.configure_file_resolution_from_args(args)
         
         # 2. Execute the BAQ
         data = service.get_baq_results(
@@ -70,6 +72,7 @@ def main():
         
         # 3. Save to file
         out_file = args.out or f"{args.baq}.json"
+        out_file = service.resolve_output_path(out_file, conflict_resolution="timestamp")
         with open(out_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
             

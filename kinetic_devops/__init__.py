@@ -16,6 +16,19 @@ from .file_service import KineticFileService
 from .report_service import KineticReportService
 from . import find_sensitive_data
 
+
+def __getattr__(name):
+    if name == "KineticExportAllService":
+        from .export_all import KineticExportAllService
+        return KineticExportAllService
+    if name == "KineticSolutionService":
+        from .solutions import KineticSolutionService
+        return KineticSolutionService
+    if name == "KineticZDataTableService":
+        from .zdatatable import KineticZDataTableService
+        return KineticZDataTableService
+    raise AttributeError(f"module 'kinetic_devops' has no attribute '{name}'")
+
 __all__ = [
     "KineticConfigManager",
     "KineticBaseClient",
@@ -24,5 +37,8 @@ __all__ = [
     "KineticBOReaderService",
     "KineticFileService",
     "KineticReportService",
+    "KineticExportAllService",
+    "KineticSolutionService",
+    "KineticZDataTableService",
     "find_sensitive_data",
 ]
