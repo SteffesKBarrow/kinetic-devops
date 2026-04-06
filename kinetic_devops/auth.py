@@ -37,6 +37,11 @@ import hashlib
 import re
 import os
 from datetime import timedelta
+
+# Ensure UTF-8 encoding for Windows terminals to support emojis
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from typing import Optional, Dict, Tuple
 
 from urllib.parse import urlparse

@@ -28,13 +28,21 @@ $hookContent = @'
 
 echo "Running pre-commit checks..."
 
+# Avoid hardlink warnings if the uv cache is on a different drive
+export UV_LINK_MODE=copy
+
+# Force UTF-8 for Python processes (fixes UnicodeEncodeError on Windows)
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+PY_ARGS="-X utf8"
+
 # Run the python check script (prefer uv when available)
 if command -v uv >/dev/null 2>&1; then
-    uv run python scripts/hooks/pre-commit
+    uv run python $PY_ARGS scripts/hooks/pre-commit
 elif command -v python >/dev/null 2>&1; then
-    python scripts/hooks/pre-commit
+    python $PY_ARGS scripts/hooks/pre-commit
 elif command -v py >/dev/null 2>&1; then
-    py -3 scripts/hooks/pre-commit
+    py -3 $PY_ARGS scripts/hooks/pre-commit
 else
     echo "Python runtime was not found in PATH. Aborting commit." >&2
     exit 1

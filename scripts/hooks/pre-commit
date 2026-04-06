@@ -180,7 +180,7 @@ def ensure_public_email_privacy() -> int:
 def run_tests(repo_root):
     """Run all pre-commit checks."""
     print("=" * 70)
-    print("🔍 PRE-COMMIT: Running test suite...")
+    print("PRE-COMMIT: Running test suite...")
     print("=" * 70)
     
     # Run tests via the installed CLI entry point
@@ -388,7 +388,7 @@ def main():
     if errors > 0:
         sys.exit(1)
     
-    print("✅ PRE-COMMIT: All checks passed.")
+    print("PRE-COMMIT: All checks passed.")
     sys.exit(0)
 
 if __name__ == "__main__":

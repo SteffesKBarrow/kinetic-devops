@@ -887,6 +887,7 @@ class KineticSolutionService(KineticBaseClient):
             for validation_name in ("Validation.txt", "validation.txt"):
                 normalized_server_dir = server_dir.rstrip("/\\")
                 validation_server_path = f"{normalized_server_dir}/{validation_name}"
+                
                 try:
                     payload = self.download_server_file(validation_server_path, folder=folder, company=company)
                 except Exception:
