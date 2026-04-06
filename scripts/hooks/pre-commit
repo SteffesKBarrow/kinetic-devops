@@ -180,7 +180,7 @@ def ensure_public_email_privacy() -> int:
 def run_tests(repo_root):
     """Run all pre-commit checks."""
     print("=" * 70)
-    print("PRE-COMMIT: Running test suite...")
+    print("  PRE-COMMIT: Running test suite...")
     print("=" * 70)
     
     # Run tests via the installed CLI entry point
