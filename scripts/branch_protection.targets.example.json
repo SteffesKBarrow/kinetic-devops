@@ -1,0 +1,26 @@
+{
+  "defaults": {
+    "branch": "main",
+    "required_checks": [
+      "Python Test Gate"
+    ],
+    "required_approvals": 1,
+    "enforce_admins": true,
+    "require_conversation_resolution": true
+  },
+  "targets": [
+    {
+      "provider": "github",
+      "owner": "SteffesKBarrow",
+      "repo": "kinetic-devops",
+      "token_env": "GITHUB_TOKEN"
+    },
+    {
+      "provider": "forgejo",
+      "owner": "your-org",
+      "repo": "kinetic-devops",
+      "token_env": "FORGEJO_TOKEN",
+      "forgejo_api_base": "https://forgejo.example.com/api/v1"
+    }
+  ]
+}
