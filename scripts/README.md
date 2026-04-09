@@ -61,6 +61,46 @@ git config core.hooksPath scripts/hooks
 
 The hook runs `python -m tests.test_runner` before each commit.
 
+## Branch Protection Automation (GitHub + Forgejo)
+
+Use the config-driven automation script to apply branch protection across multiple hosts.
+
+Config template:
+
+```powershell
+Copy-Item scripts\branch_protection.targets.example.json scripts\branch_protection.targets.json
+```
+
+Set your tokens in the current shell:
+
+```powershell
+$env:GITHUB_TOKEN = "<github-token>"
+$env:FORGEJO_TOKEN = "<forgejo-token>"
+```
+
+Dry-run preview (default):
+
+```powershell
+python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json
+```
+
+Apply changes:
+
+```powershell
+python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json --apply
+```
+
+The script supports:
+- GitHub branch protection via `https://api.github.com`
+- Forgejo branch protection via a configured `forgejo_api_base` (for example `https://forgejo.example.com/api/v1`)
+- Multiple repositories/hosts in one run
+
+CI workflow mirrors:
+- GitHub Actions: `.github/workflows/ci-tests.yml`
+- Forgejo Actions: `.forgejo/workflows/ci-tests.yml`
+
+Use branch protection rules on both platforms to require the `Python Test Gate` status check before merge.
+
 ---
 
 ## Helper Scripts
