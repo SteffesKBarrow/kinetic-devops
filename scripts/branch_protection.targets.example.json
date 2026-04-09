@@ -2,7 +2,8 @@
   "defaults": {
     "branch": "main",
     "required_checks": [
-      "Python Test Gate"
+      "Python Test Gate (required, py3.10)",
+      "Python Test Gate (required, py3.12)"
     ],
     "required_approvals": 1,
     "enforce_admins": true,
@@ -17,10 +18,10 @@
     },
     {
       "provider": "forgejo",
-      "owner": "your-org",
-      "repo": "kinetic-devops",
       "token_env": "FORGEJO_TOKEN",
-      "forgejo_api_base": "https://forgejo.example.com/api/v1"
+      "owner": "",
+      "repo": "",
+      "forgejo_api_base": ""
     }
   ]
 }

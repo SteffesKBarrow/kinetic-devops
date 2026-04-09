@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 
 class TestBranchProtectionAutomation(unittest.TestCase):
@@ -36,7 +37,13 @@ class TestBranchProtectionAutomation(unittest.TestCase):
         self.assertEqual(len(targets), 2)
         self.assertEqual(targets[0].provider, "github")
         self.assertEqual(targets[1].provider, "forgejo")
-        self.assertEqual(targets[0].required_checks, ["Python Test Gate"])
+        self.assertEqual(
+            targets[0].required_checks,
+            [
+                "Python Test Gate (required, py3.10)",
+                "Python Test Gate (required, py3.12)",
+            ],
+        )
 
     def test_payloads_include_expected_controls(self):
         target = self.mod.Target(
@@ -122,6 +129,67 @@ class TestBranchProtectionAutomation(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertIn("Token environment variable not set", stderr.getvalue())
+
+    def test_with_git_defaults_infers_forgejo_target(self):
+        target = self.mod.Target(
+            provider="",
+            owner="",
+            repo="",
+            branch="main",
+            token_env="FORGEJO_TOKEN",
+            required_checks=["Python Test Gate"],
+            required_approvals=1,
+            enforce_admins=True,
+            require_conversation_resolution=True,
+            forgejo_api_base="",
+        )
+
+        with patch.object(
+            self.mod,
+            "_detect_current_repo_from_git",
+            return_value={
+                "provider": "forgejo",
+                "owner": "acme",
+                "repo": "platform",
+                "forgejo_api_base": "https://forgejo.acme.local/api/v1",
+            },
+        ):
+            resolved = self.mod._with_git_defaults(target)
+
+        self.assertEqual(resolved.provider, "forgejo")
+        self.assertEqual(resolved.owner, "acme")
+        self.assertEqual(resolved.repo, "platform")
+        self.assertEqual(resolved.forgejo_api_base, "https://forgejo.acme.local/api/v1")
+
+    def test_with_git_defaults_preserves_explicit_values(self):
+        target = self.mod.Target(
+            provider="github",
+            owner="explicit-owner",
+            repo="explicit-repo",
+            branch="main",
+            token_env="GITHUB_TOKEN",
+            required_checks=["Python Test Gate"],
+            required_approvals=1,
+            enforce_admins=True,
+            require_conversation_resolution=True,
+            forgejo_api_base="",
+        )
+
+        with patch.object(
+            self.mod,
+            "_detect_current_repo_from_git",
+            return_value={
+                "provider": "forgejo",
+                "owner": "fallback-owner",
+                "repo": "fallback-repo",
+                "forgejo_api_base": "https://forgejo.example.com/api/v1",
+            },
+        ):
+            resolved = self.mod._with_git_defaults(target)
+
+        self.assertEqual(resolved.provider, "github")
+        self.assertEqual(resolved.owner, "explicit-owner")
+        self.assertEqual(resolved.repo, "explicit-repo")
 
 
 if __name__ == "__main__":
