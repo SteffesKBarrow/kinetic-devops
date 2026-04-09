@@ -78,6 +78,17 @@ $env:GITHUB_TOKEN = "<github-token>"
 $env:FORGEJO_TOKEN = "<forgejo-token>"
 ```
 
+Or store tokens encrypted at rest in OS keyring (recommended):
+
+```powershell
+python -c "import keyring; keyring.set_password('kinetic-devops-tokens','github','<github-token>')"
+python -c "import keyring; keyring.set_password('kinetic-devops-tokens','forgejo','<forgejo-token>')"
+```
+
+Token resolution order:
+- Environment variable first (for CI/CD and temporary overrides)
+- Keyring fallback (`kinetic-devops-tokens` service by default)
+
 Dry-run preview (default):
 
 ```powershell
@@ -129,6 +140,12 @@ $env:FORGEJO_TOKEN = "<forgejo-token>"
 python scripts/forgejo_fullstack_smoke.py --apply
 ```
 
+Keyring-backed token path (no token env var required):
+
+```powershell
+python scripts/forgejo_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account forgejo
+```
+
 Keep the temporary repository for manual inspection:
 
 ```powershell
@@ -158,6 +175,12 @@ Apply mode (creates repo, applies branch protection, verifies it, then deletes r
 ```powershell
 $env:GITHUB_TOKEN = "<github-token>"
 python scripts/github_fullstack_smoke.py --apply
+```
+
+Keyring-backed token path (no token env var required):
+
+```powershell
+python scripts/github_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account github
 ```
 
 Keep the temporary repository for manual inspection:

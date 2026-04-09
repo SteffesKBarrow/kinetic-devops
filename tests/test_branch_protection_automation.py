@@ -128,7 +128,31 @@ class TestBranchProtectionAutomation(unittest.TestCase):
                 ])
 
         self.assertEqual(code, 1)
-        self.assertIn("Token environment variable not set", stderr.getvalue())
+        self.assertIn("Token not found", stderr.getvalue())
+
+    def test_run_target_uses_keyring_when_env_missing(self):
+        target = self.mod.Target(
+            provider="github",
+            owner="example",
+            repo="repo",
+            branch="main",
+            token_env="GITHUB_TOKEN",
+            token_service="kinetic-devops-tokens",
+            token_account="github",
+            required_checks=["Python Test Gate"],
+            required_approvals=1,
+            enforce_admins=True,
+            require_conversation_resolution=True,
+            forgejo_api_base="",
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("keyring.get_password", return_value="kr_token"):
+                with patch.object(self.mod, "_apply_github") as apply_gh:
+                    self.mod._run_target(target, dry_run=False)
+
+        apply_gh.assert_called_once()
+        self.assertEqual(apply_gh.call_args.kwargs["token"], "kr_token")
 
     def test_with_git_defaults_infers_forgejo_target(self):
         target = self.mod.Target(

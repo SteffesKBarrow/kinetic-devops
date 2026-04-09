@@ -11,12 +11,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
+
+
+DEFAULT_TOKEN_SERVICE = "kinetic-devops-tokens"
 
 
 @dataclass
@@ -31,10 +36,110 @@ class Target:
     enforce_admins: bool
     require_conversation_resolution: bool
     forgejo_api_base: str
+    token_service: str = DEFAULT_TOKEN_SERVICE
+    token_account: str = ""
 
 
 class BranchProtectionError(RuntimeError):
     """Raised when a branch protection API call fails."""
+
+
+def _parse_git_remote(url: str) -> Dict[str, str]:
+    """Parse origin remote URL into host/owner/repo components."""
+    value = str(url or "").strip()
+    if not value:
+        raise BranchProtectionError("Unable to parse empty git remote URL")
+
+    # SCP-like syntax: git@host:owner/repo.git
+    if "@" in value and ":" in value and not value.startswith(("http://", "https://", "ssh://")):
+        _, right = value.split("@", 1)
+        host, path = right.split(":", 1)
+        owner_repo = path.rstrip("/")
+        if owner_repo.endswith(".git"):
+            owner_repo = owner_repo[:-4]
+        parts = [p for p in owner_repo.split("/") if p]
+        if len(parts) < 2:
+            raise BranchProtectionError(f"Unable to parse owner/repo from git remote: {value}")
+        return {"host": host.lower(), "owner": parts[-2], "repo": parts[-1], "scheme": "https"}
+
+    parsed = urlparse(value)
+    if not parsed.netloc or not parsed.path:
+        raise BranchProtectionError(f"Unable to parse git remote URL: {value}")
+
+    owner_repo = parsed.path.rstrip("/")
+    if owner_repo.endswith(".git"):
+        owner_repo = owner_repo[:-4]
+    parts = [p for p in owner_repo.split("/") if p]
+    if len(parts) < 2:
+        raise BranchProtectionError(f"Unable to parse owner/repo from git remote: {value}")
+    return {
+        "host": parsed.netloc.lower(),
+        "owner": parts[-2],
+        "repo": parts[-1],
+        "scheme": parsed.scheme or "https",
+    }
+
+
+def _detect_current_repo_from_git() -> Dict[str, str]:
+    """Detect repository coordinates from git remote origin URL."""
+    try:
+        remote = subprocess.check_output(
+            ["git", "config", "--get", "remote.origin.url"],
+            text=True,
+            timeout=10,
+        ).strip()
+    except Exception as exc:  # pragma: no cover - exercised via caller assertions.
+        raise BranchProtectionError(
+            "Could not read git remote.origin.url; run inside a git repo or specify owner/repo explicitly"
+        ) from exc
+
+    parsed = _parse_git_remote(remote)
+    host = parsed["host"]
+    provider = "github" if host.endswith("github.com") else "forgejo"
+
+    result = {
+        "provider": provider,
+        "owner": parsed["owner"],
+        "repo": parsed["repo"],
+    }
+    if provider == "forgejo":
+        scheme = parsed.get("scheme") or "https"
+        result["forgejo_api_base"] = f"{scheme}://{host}/api/v1"
+
+    return result
+
+
+def _with_git_defaults(target: Target) -> Target:
+    """Fill missing target fields from current git repository metadata."""
+    needs_git_defaults = not target.owner or not target.repo or not target.provider
+    needs_forgejo_api = target.provider == "forgejo" and not target.forgejo_api_base
+    if not needs_git_defaults and not needs_forgejo_api:
+        return target
+
+    detected = _detect_current_repo_from_git()
+
+    provider = target.provider or detected.get("provider", "")
+    owner = target.owner or detected.get("owner", "")
+    repo = target.repo or detected.get("repo", "")
+
+    forgejo_api_base = target.forgejo_api_base
+    if provider == "forgejo" and not forgejo_api_base:
+        forgejo_api_base = str(detected.get("forgejo_api_base", "")).strip()
+
+    return Target(
+        provider=provider,
+        owner=owner,
+        repo=repo,
+        branch=target.branch,
+        token_env=target.token_env,
+        token_service=target.token_service,
+        token_account=target.token_account,
+        required_checks=target.required_checks,
+        required_approvals=target.required_approvals,
+        enforce_admins=target.enforce_admins,
+        require_conversation_resolution=target.require_conversation_resolution,
+        forgejo_api_base=forgejo_api_base,
+    )
 
 
 def _load_config(path: Path) -> Dict[str, Any]:
@@ -50,7 +155,7 @@ def _merge_target(defaults: Dict[str, Any], raw_target: Dict[str, Any]) -> Targe
     merged.update(raw_target)
 
     provider = str(merged.get("provider", "")).strip().lower()
-    if provider not in {"github", "forgejo"}:
+    if provider and provider not in {"github", "forgejo"}:
         raise BranchProtectionError(f"Unsupported provider: {provider}")
 
     required_checks_raw = merged.get("required_checks") or []
@@ -63,6 +168,8 @@ def _merge_target(defaults: Dict[str, Any], raw_target: Dict[str, Any]) -> Targe
         repo=str(merged.get("repo", "")).strip(),
         branch=str(merged.get("branch", "main")).strip(),
         token_env=str(merged.get("token_env", "")).strip(),
+        token_service=str(merged.get("token_service", DEFAULT_TOKEN_SERVICE)).strip() or DEFAULT_TOKEN_SERVICE,
+        token_account=str(merged.get("token_account", "")).strip(),
         required_checks=[str(item).strip() for item in required_checks_raw if str(item).strip()],
         required_approvals=int(merged.get("required_approvals", 1)),
         enforce_admins=bool(merged.get("enforce_admins", True)),
@@ -85,14 +192,33 @@ def _parse_targets(config: Dict[str, Any]) -> List[Target]:
         if not isinstance(item, dict):
             raise BranchProtectionError(f"targets[{index}] must be an object")
         target = _merge_target(defaults, item)
-        if not target.owner or not target.repo:
-            raise BranchProtectionError(f"targets[{index}] missing owner or repo")
         if not target.token_env:
             raise BranchProtectionError(f"targets[{index}] missing token_env")
-        if target.provider == "forgejo" and not target.forgejo_api_base:
-            raise BranchProtectionError(f"targets[{index}] missing forgejo_api_base")
         parsed.append(target)
     return parsed
+
+
+def _resolve_token(target: Target) -> tuple[str, str, str, str]:
+    """Resolve provider token from env var first, then keyring fallback."""
+    env_name = target.token_env
+    token = os.getenv(env_name, "").strip()
+    if token:
+        return token, "env", env_name, ""
+
+    service = target.token_service or DEFAULT_TOKEN_SERVICE
+    account = target.token_account or target.provider
+
+    try:
+        import keyring
+
+        token = str(keyring.get_password(service, account) or "").strip()
+    except Exception:
+        token = ""
+
+    if token:
+        return token, "keyring", service, account
+
+    return "", "", service, account
 
 
 def _github_payload(target: Target) -> Dict[str, Any]:
@@ -203,10 +329,32 @@ def _apply_forgejo(target: Target, token: str, dry_run: bool) -> None:
 
 
 def _run_target(target: Target, dry_run: bool) -> None:
-    token = os.getenv(target.token_env, "").strip()
+    target = _with_git_defaults(target)
+
+    if target.provider not in {"github", "forgejo"}:
+        raise BranchProtectionError(
+            "Unable to determine provider. Set target provider or ensure git remote host is github.com or Forgejo/Gitea."
+        )
+
+    if not target.owner or not target.repo:
+        raise BranchProtectionError("Unable to determine owner/repo. Set them explicitly or run inside a git repo.")
+
+    if target.provider == "forgejo" and not target.forgejo_api_base:
+        raise BranchProtectionError(
+            "Missing forgejo_api_base. Set it explicitly or run inside a git repo with Forgejo remote origin."
+        )
+
+    token, source, source_name, source_account = _resolve_token(target)
+
+    if source == "env":
+        print(f"  token_source: env:{source_name}")
+    elif source == "keyring":
+        print(f"  token_source: keyring:{source_name}/{source_account}")
+
     if not token and not dry_run:
         raise BranchProtectionError(
-            f"Token environment variable not set: {target.token_env}"
+            "Token not found. "
+            f"Set env var '{target.token_env}' or keyring '{source_name}' account '{source_account}'."
         )
 
     if target.provider == "github":
