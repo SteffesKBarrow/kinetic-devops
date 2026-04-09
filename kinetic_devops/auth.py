@@ -40,8 +40,12 @@ from datetime import timedelta
 from typing import Optional, Dict, Tuple
 
 from urllib.parse import urlparse
-from .KineticCore import KineticCore
-from . import crypto
+if __package__:
+    from .KineticCore import KineticCore
+    from . import crypto
+else:
+    from kinetic_devops.KineticCore import KineticCore
+    from kinetic_devops import crypto
 
 SERVICE_API_KEY = "epicor-kinetic-apikey"
 SERVICE_SERVERS = "epicor-kinetic-servers"

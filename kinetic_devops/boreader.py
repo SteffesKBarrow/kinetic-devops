@@ -15,7 +15,10 @@ import argparse
 import requests
 from typing import Dict, Any, Optional
 
-from .base_client import KineticBaseClient
+if __package__:
+    from .base_client import KineticBaseClient
+else:
+    from kinetic_devops.base_client import KineticBaseClient
 
 
 class KineticBOReaderService(KineticBaseClient):

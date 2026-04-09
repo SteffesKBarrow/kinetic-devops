@@ -22,8 +22,12 @@ from urllib.parse import parse_qsl
 
 import requests
 
-from .efx import KineticEFxService
-from .base_client import KineticBaseClient
+if __package__:
+    from .efx import KineticEFxService
+    from .base_client import KineticBaseClient
+else:
+    from kinetic_devops.efx import KineticEFxService
+    from kinetic_devops.base_client import KineticBaseClient
 
 DEFAULT_EATT_LIBRARY = "ExportAllTheThings"
 DEFAULT_EXPORT_FUNCTIONS = [

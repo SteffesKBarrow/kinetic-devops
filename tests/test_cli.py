@@ -1,53 +1,95 @@
-"""
-tests/test_cli.py - Test CLI help and argument parsing for all services.
-"""
+"""CLI regression tests for all supported entry paths."""
+
+import os
+import shutil
 import subprocess
 import sys
 import unittest
+from pathlib import Path
+
+from tests.cli_matrix import CLI_MODULES, ROUTER_TOOLS
 
 
 class TestServiceCLI(unittest.TestCase):
-    """Verify all services have working CLI interfaces."""
-    
-    def _test_cli_help(self, module_name):
-        """Helper to test CLI --help for a module."""
-        result = subprocess.run(
-            [sys.executable, "-m", module_name, "--help"],
+    """Verify all modules are reachable through supported CLI entry paths."""
+
+    @staticmethod
+    def _run(command):
+        return subprocess.run(
+            command,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=20,
         )
-        self.assertEqual(result.returncode, 0, f"{module_name} --help failed")
-        self.assertIn("usage:", result.stdout, f"{module_name} help missing usage")
-    
-    def test_baq_cli_help(self):
-        """Test kinetic_devops.baq --help."""
-        result = subprocess.run(
-            [sys.executable, "-m", "kinetic_devops.baq", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        self.assertEqual(result.returncode, 0, "kinetic_devops.baq --help failed")
-        self.assertIn("usage:", result.stdout, "kinetic_devops.baq help missing usage")
-        self.assertNotIn("RuntimeWarning", result.stderr)
-    
-    def test_boreader_cli_help(self):
-        """Test kinetic_devops.boreader --help."""
-        self._test_cli_help("kinetic_devops.boreader")
-    
-    def test_file_service_cli_help(self):
-        """Test kinetic_devops.file_service --help."""
-        self._test_cli_help("kinetic_devops.file_service")
 
-    def test_export_all_cli_help(self):
-        """Test kinetic_devops.export_all --help."""
-        self._test_cli_help("kinetic_devops.export_all")
+    @staticmethod
+    def _assert_help(result, entry_name):
+        if result.returncode != 0:
+            raise AssertionError(
+                f"{entry_name} --help failed with {result.returncode}\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            )
+        if "usage:" not in result.stdout.lower():
+            raise AssertionError(
+                f"{entry_name} --help missing usage output\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            )
 
-    def test_solutions_cli_help(self):
-        """Test kinetic_devops.solutions --help."""
-        self._test_cli_help("kinetic_devops.solutions")
+    @staticmethod
+    def _resolve_console_script():
+        found = shutil.which("kinetic-devops")
+        if found:
+            return found
+
+        repo_root = Path(__file__).resolve().parents[1]
+        if os.name == "nt":
+            candidates = [
+                repo_root / ".venv" / "Scripts" / "kinetic-devops.exe",
+                repo_root / ".venv" / "Scripts" / "kinetic-devops.cmd",
+                repo_root / ".venv" / "Scripts" / "kinetic-devops",
+            ]
+        else:
+            candidates = [repo_root / ".venv" / "bin" / "kinetic-devops"]
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
+
+    def test_python_module_help_for_all_cli_modules(self):
+        for item in CLI_MODULES:
+            module_name = f"kinetic_devops.{item['module']}"
+            with self.subTest(entry=module_name):
+                result = self._run([sys.executable, "-m", module_name, "--help"])
+                self._assert_help(result, module_name)
+                self.assertNotIn("RuntimeWarning", result.stderr)
+
+    def test_router_module_help_for_all_router_tools(self):
+        for item in ROUTER_TOOLS:
+            tool_name = item["router"]
+            entry_name = f"python -m kinetic_devops {tool_name}"
+            with self.subTest(entry=entry_name):
+                result = self._run([sys.executable, "-m", "kinetic_devops", tool_name, "--help"])
+                self._assert_help(result, entry_name)
+
+    def test_console_script_help_for_all_router_tools(self):
+        script = self._resolve_console_script()
+        if not script:
+            self.skipTest("kinetic-devops console script was not found in PATH or .venv")
+
+        for item in ROUTER_TOOLS:
+            tool_name = item["router"]
+            entry_name = f"kinetic-devops {tool_name}"
+            with self.subTest(entry=entry_name):
+                result = self._run([script, tool_name, "--help"])
+                self._assert_help(result, entry_name)
+
+    def test_router_module_root_help(self):
+        result = self._run([sys.executable, "-m", "kinetic_devops", "--help"])
+        self._assert_help(result, "python -m kinetic_devops")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
