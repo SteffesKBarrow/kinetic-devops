@@ -32,6 +32,9 @@ classifiers = [
 
 [project.scripts]
 kinetic-devops = "kinetic_devops.__main__:main"
+repo-maker = "kinetic_devops.repo_maker:main"
+repomaker = "kinetic_devops.repomaker.__main__:main"
+reposmith = "kinetic_devops.repomaker.reposmith:main"
 
 [tool.setuptools]
 include-package-data = true

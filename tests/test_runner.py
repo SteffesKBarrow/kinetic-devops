@@ -132,6 +132,11 @@ def run_tests():
     logger.info(f"Errors: {len(result.errors)}")
     logger.info(f"Skipped: {len(result.skipped)}")
 
+    if result.testsRun == 0:
+        logger.error("[FAIL] ZERO TESTS DISCOVERED")
+        logger.info("=" * 70)
+        return 1
+
     if result.wasSuccessful():
         logger.info("[PASS] ALL TESTS PASSED")
         logger.info("=" * 70)

@@ -93,8 +93,23 @@ Token resolution order:
 Unified smoke wrapper (auto-detect provider from git remote):
 
 ```powershell
-python scripts/repo_fullstack_smoke.py
-python scripts/repo_fullstack_smoke.py --apply
+python scripts/repo_maker.py
+python scripts/repo_maker.py --apply
+```
+
+Modular package commands (same behavior, namespaced under RepoMaker):
+
+```powershell
+python -m kinetic_devops.repomaker reposmith --apply
+python -m kinetic_devops.repomaker apply --config scripts/branch_protection.targets.json --apply
+```
+
+Installed console scripts (after package install):
+
+```powershell
+repomaker reposmith --apply
+repomaker apply --config scripts/branch_protection.targets.json --apply
+reposmith --apply
 ```
 
 Dry-run preview (default):

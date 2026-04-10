@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 
 
@@ -74,6 +74,12 @@ def detect_from_git(error_type: type[Exception] = RuntimeError) -> Dict[str, str
 
     parsed["provider"] = provider
     return parsed
+
+
+def detect_provider_from_git(*, error_type: type[Exception] = RuntimeError) -> str:
+    """Detect repository provider from git remote (github or forgejo)."""
+    detected = detect_from_git(error_type=error_type)
+    return str(detected["provider"])
 
 
 def normalize_forgejo_api_base(base_url: str, error_type: type[Exception] = RuntimeError) -> str:
