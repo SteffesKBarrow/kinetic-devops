@@ -16,20 +16,16 @@ from __future__ import annotations
 
 import argparse
 import os
-import secrets
-import string
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
+from kinetic_devops import repo_context, repo_smoke_core
 
 
 class ForgejoSmokeError(RuntimeError):
     """Raised when the Forgejo smoke flow fails."""
-
-
-DEFAULT_TOKEN_SERVICE = "kinetic-devops-tokens"
 
 
 @dataclass
@@ -47,12 +43,7 @@ class SmokeConfig:
 
 
 def normalize_api_base(base_url: str) -> str:
-    value = str(base_url or "").strip().rstrip("/")
-    if not value:
-        raise ForgejoSmokeError("Forgejo URL is required")
-    if value.endswith("/api/v1"):
-        return value
-    return f"{value}/api/v1"
+    return repo_context.normalize_forgejo_api_base(base_url, error_type=ForgejoSmokeError)
 
 
 def build_branch_protection_payload(branch: str, required_check: str, required_approvals: int) -> Dict[str, Any]:
@@ -77,34 +68,6 @@ def _headers(token: str) -> Dict[str, str]:
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-
-
-def _random_suffix(length: int = 8) -> str:
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-def _resolve_token(token_env: str, token_service: str, token_account: str) -> tuple[str, str]:
-    """Resolve token from env var first, then keyring fallback."""
-    env_name = str(token_env or "").strip()
-    token = str(os.getenv(env_name, "") or "").strip()
-    if token:
-        return token, f"env:{env_name}"
-
-    service = str(token_service or DEFAULT_TOKEN_SERVICE).strip() or DEFAULT_TOKEN_SERVICE
-    account = str(token_account or "forgejo").strip() or "forgejo"
-
-    try:
-        import keyring
-
-        token = str(keyring.get_password(service, account) or "").strip()
-    except Exception:
-        token = ""
-
-    if token:
-        return token, f"keyring:{service}/{account}"
-
-    return "", f"env:{env_name} or keyring:{service}/{account}"
 
 
 def create_repo(session: requests.Session, cfg: SmokeConfig) -> None:
@@ -223,35 +186,8 @@ def run_smoke(cfg: SmokeConfig, dry_run: bool) -> None:
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Forgejo branch-protection full-stack smoke test")
     parser.add_argument("--forgejo-url", default=os.getenv("FORGEJO_URL", ""), help="Forgejo base URL")
-    parser.add_argument("--owner", default=os.getenv("FORGEJO_OWNER", ""), help="Repository owner/user/org")
-    parser.add_argument(
-        "--owner-type",
-        choices=("org", "user"),
-        default=os.getenv("FORGEJO_OWNER_TYPE", "org"),
-        help="Owner type for repository creation endpoint",
-    )
-    parser.add_argument("--repo", default="", help="Repo name (default: generated temporary name)")
-    parser.add_argument("--branch", default="main", help="Target branch")
-    parser.add_argument("--required-check", default="Python Test Gate", help="Required status-check context")
-    parser.add_argument("--required-approvals", type=int, default=1, help="Required PR approvals")
-    parser.add_argument("--token-env", default="FORGEJO_TOKEN", help="Environment variable containing Forgejo token")
-    parser.add_argument(
-        "--token-service",
-        default=DEFAULT_TOKEN_SERVICE,
-        help="Keyring service name used when env token is not set",
-    )
-    parser.add_argument(
-        "--token-account",
-        default="forgejo",
-        help="Keyring account name used when env token is not set",
-    )
-    parser.add_argument("--timeout", type=int, default=60, help="HTTP timeout in seconds")
-    parser.add_argument("--keep-repo", action="store_true", help="Keep repository after successful run")
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Execute API calls. Without this flag, script runs in dry-run mode.",
-    )
+    repo_smoke_core.add_common_args(parser, token_env_default="FORGEJO_TOKEN")
+    parser.set_defaults(owner=os.getenv("FORGEJO_OWNER", ""), owner_type=os.getenv("FORGEJO_OWNER_TYPE", "org"))
     return parser.parse_args(argv)
 
 
@@ -260,16 +196,38 @@ def main(argv: Optional[list[str]] = None) -> int:
     dry_run = not args.apply
 
     try:
-        api_base = normalize_api_base(args.forgejo_url)
+        url_value = str(args.forgejo_url or "").strip()
         owner = str(args.owner or "").strip()
-        if not owner:
-            raise ForgejoSmokeError("Owner is required. Set --owner or FORGEJO_OWNER.")
+        host = ""
 
-        token, token_source = _resolve_token(args.token_env, args.token_service, args.token_account)
+        if not url_value or not owner:
+            detected = repo_context.detect_from_git(error_type=ForgejoSmokeError)
+            if detected["provider"] != "forgejo":
+                raise ForgejoSmokeError(
+                    "Current git remote appears to be GitHub. Use github_fullstack_smoke.py or pass Forgejo URL/owner explicitly."
+                )
+            if not url_value:
+                url_value = f"{detected.get('scheme', 'https')}://{detected['host']}/api/v1"
+            if not owner:
+                owner = detected["owner"]
+            host = detected["host"]
+
+        api_base = normalize_api_base(url_value)
+        if not host:
+            host = repo_context.host_from_url(api_base, error_type=ForgejoSmokeError)
+
+        token, token_source = repo_smoke_core.resolve_token(
+            provider="forgejo",
+            env_name=args.token_env,
+            token_service=args.token_service,
+            token_account=args.token_account,
+            host=host,
+            owner=owner,
+        )
         if not token and not dry_run:
             raise ForgejoSmokeError(f"Missing token. Checked {token_source}.")
 
-        repo_name = str(args.repo or "").strip() or f"bp-smoke-{_random_suffix()}"
+        repo_name = str(args.repo or "").strip() or f"bp-smoke-{repo_smoke_core.random_suffix()}"
 
         cfg = SmokeConfig(
             api_base=api_base,

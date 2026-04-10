@@ -120,12 +120,13 @@ class TestBranchProtectionAutomation(unittest.TestCase):
 
             stdout = io.StringIO()
             stderr = io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                code = self.mod.main([
-                    "--config",
-                    str(cfg_path),
-                    "--apply",
-                ])
+            with patch("keyring.get_password", return_value=None):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = self.mod.main([
+                        "--config",
+                        str(cfg_path),
+                        "--apply",
+                    ])
 
         self.assertEqual(code, 1)
         self.assertIn("Token not found", stderr.getvalue())

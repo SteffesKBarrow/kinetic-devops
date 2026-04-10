@@ -14,20 +14,16 @@ from __future__ import annotations
 
 import argparse
 import os
-import secrets
-import string
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
+from kinetic_devops import repo_context, repo_smoke_core
 
 
 class GitHubSmokeError(RuntimeError):
     """Raised when the GitHub smoke flow fails."""
-
-
-DEFAULT_TOKEN_SERVICE = "kinetic-devops-tokens"
 
 
 @dataclass
@@ -74,34 +70,6 @@ def _headers(token: str) -> Dict[str, str]:
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",
     }
-
-
-def _random_suffix(length: int = 8) -> str:
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-def _resolve_token(token_env: str, token_service: str, token_account: str) -> tuple[str, str]:
-    """Resolve token from env var first, then keyring fallback."""
-    env_name = str(token_env or "").strip()
-    token = str(os.getenv(env_name, "") or "").strip()
-    if token:
-        return token, f"env:{env_name}"
-
-    service = str(token_service or DEFAULT_TOKEN_SERVICE).strip() or DEFAULT_TOKEN_SERVICE
-    account = str(token_account or "github").strip() or "github"
-
-    try:
-        import keyring
-
-        token = str(keyring.get_password(service, account) or "").strip()
-    except Exception:
-        token = ""
-
-    if token:
-        return token, f"keyring:{service}/{account}"
-
-    return "", f"env:{env_name} or keyring:{service}/{account}"
 
 
 def create_repo(session: requests.Session, cfg: SmokeConfig) -> None:
@@ -208,35 +176,8 @@ def run_smoke(cfg: SmokeConfig, dry_run: bool) -> None:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run GitHub branch-protection full-stack smoke test")
-    parser.add_argument("--owner", default=os.getenv("GITHUB_OWNER", ""), help="Repository owner/user/org")
-    parser.add_argument(
-        "--owner-type",
-        choices=("org", "user"),
-        default=os.getenv("GITHUB_OWNER_TYPE", "org"),
-        help="Owner type for repository creation endpoint",
-    )
-    parser.add_argument("--repo", default="", help="Repo name (default: generated temporary name)")
-    parser.add_argument("--branch", default="main", help="Target branch")
-    parser.add_argument("--required-check", default="Python Test Gate", help="Required status-check context")
-    parser.add_argument("--required-approvals", type=int, default=1, help="Required PR approvals")
-    parser.add_argument("--token-env", default="GITHUB_TOKEN", help="Environment variable containing GitHub token")
-    parser.add_argument(
-        "--token-service",
-        default=DEFAULT_TOKEN_SERVICE,
-        help="Keyring service name used when env token is not set",
-    )
-    parser.add_argument(
-        "--token-account",
-        default="github",
-        help="Keyring account name used when env token is not set",
-    )
-    parser.add_argument("--timeout", type=int, default=60, help="HTTP timeout in seconds")
-    parser.add_argument("--keep-repo", action="store_true", help="Keep repository after successful run")
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Execute API calls. Without this flag, script runs in dry-run mode.",
-    )
+    repo_smoke_core.add_common_args(parser, token_env_default="GITHUB_TOKEN")
+    parser.set_defaults(owner=os.getenv("GITHUB_OWNER", ""), owner_type=os.getenv("GITHUB_OWNER_TYPE", "org"))
     return parser.parse_args(argv)
 
 
@@ -245,15 +186,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     dry_run = not args.apply
 
     try:
-        owner = str(args.owner or "").strip()
-        if not owner:
-            raise GitHubSmokeError("Owner is required. Set --owner or GITHUB_OWNER.")
+        owner, detected_host = repo_smoke_core.resolve_provider_owner(
+            provider="github",
+            owner=args.owner,
+            error_type=GitHubSmokeError,
+        )
+        if not detected_host:
+            detected_host = "github.com"
 
-        token, token_source = _resolve_token(args.token_env, args.token_service, args.token_account)
+        token, token_source = repo_smoke_core.resolve_token(
+            provider="github",
+            env_name=args.token_env,
+            token_service=args.token_service,
+            token_account=args.token_account,
+            host=detected_host,
+            owner=owner,
+        )
         if not token and not dry_run:
             raise GitHubSmokeError(f"Missing token. Checked {token_source}.")
 
-        repo_name = str(args.repo or "").strip() or f"bp-smoke-{_random_suffix()}"
+        repo_name = str(args.repo or "").strip() or f"bp-smoke-{repo_smoke_core.random_suffix()}"
 
         cfg = SmokeConfig(
             owner=owner,

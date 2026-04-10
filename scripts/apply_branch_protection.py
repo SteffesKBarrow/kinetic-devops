@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
+from kinetic_devops import repo_context
 
 
 DEFAULT_TOKEN_SERVICE = "kinetic-devops-tokens"
@@ -201,24 +202,32 @@ def _parse_targets(config: Dict[str, Any]) -> List[Target]:
 def _resolve_token(target: Target) -> tuple[str, str, str, str]:
     """Resolve provider token from env var first, then keyring fallback."""
     env_name = target.token_env
-    token = os.getenv(env_name, "").strip()
-    if token:
+    service = target.token_service or DEFAULT_TOKEN_SERVICE
+
+    if target.provider == "github":
+        host = "github.com"
+    else:
+        host = repo_context.host_from_url(target.forgejo_api_base, error_type=BranchProtectionError)
+
+    token, source, accounts = repo_context.resolve_token(
+        env_name=env_name,
+        token_service=service,
+        token_account=target.token_account,
+        host=host,
+        owner=target.owner,
+        legacy_account=target.provider,
+    )
+
+    if source.startswith("env:"):
         return token, "env", env_name, ""
 
-    service = target.token_service or DEFAULT_TOKEN_SERVICE
-    account = target.token_account or target.provider
+    if source.startswith("keyring:"):
+        _, right = source.split(":", 1)
+        svc, account = right.split("/", 1)
+        return token, "keyring", svc, account
 
-    try:
-        import keyring
-
-        token = str(keyring.get_password(service, account) or "").strip()
-    except Exception:
-        token = ""
-
-    if token:
-        return token, "keyring", service, account
-
-    return "", "", service, account
+    checked_accounts = ", ".join(accounts)
+    return "", "", service, checked_accounts
 
 
 def _github_payload(target: Target) -> Dict[str, Any]:

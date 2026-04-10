@@ -81,13 +81,21 @@ $env:FORGEJO_TOKEN = "<forgejo-token>"
 Or store tokens encrypted at rest in OS keyring (recommended):
 
 ```powershell
-python -c "import keyring; keyring.set_password('kinetic-devops-tokens','github','<github-token>')"
-python -c "import keyring; keyring.set_password('kinetic-devops-tokens','forgejo','<forgejo-token>')"
+python -c "import keyring; keyring.set_password('kinetic-devops-tokens','github.com/my-org','<github-token>')"
+python -c "import keyring; keyring.set_password('kinetic-devops-tokens','forgejo.local/my-org','<forgejo-token>')"
 ```
 
 Token resolution order:
 - Environment variable first (for CI/CD and temporary overrides)
 - Keyring fallback (`kinetic-devops-tokens` service by default)
+- Keyring account match order: explicit account, `host/owner`, `host`, then legacy provider keys
+
+Unified smoke wrapper (auto-detect provider from git remote):
+
+```powershell
+python scripts/repo_fullstack_smoke.py
+python scripts/repo_fullstack_smoke.py --apply
+```
 
 Dry-run preview (default):
 
@@ -143,7 +151,7 @@ python scripts/forgejo_fullstack_smoke.py --apply
 Keyring-backed token path (no token env var required):
 
 ```powershell
-python scripts/forgejo_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account forgejo
+python scripts/forgejo_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account forgejo.local/my-org
 ```
 
 Keep the temporary repository for manual inspection:
@@ -180,7 +188,7 @@ python scripts/github_fullstack_smoke.py --apply
 Keyring-backed token path (no token env var required):
 
 ```powershell
-python scripts/github_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account github
+python scripts/github_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account github.com/my-org
 ```
 
 Keep the temporary repository for manual inspection:
