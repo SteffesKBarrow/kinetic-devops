@@ -21,7 +21,10 @@ import datetime as dt
 from typing import Optional, Dict, Any, Iterable, List
 from urllib.parse import quote, urlparse
  
-from .base_client import KineticBaseClient
+if __package__:
+    from .base_client import KineticBaseClient
+else:
+    from kinetic_devops.base_client import KineticBaseClient
 
 # File: kinetic_devops/metafx.py
 

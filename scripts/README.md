@@ -61,6 +61,163 @@ git config core.hooksPath scripts/hooks
 
 The hook runs `python -m tests.test_runner` before each commit.
 
+## Branch Protection Automation (GitHub + Forgejo)
+
+Use the config-driven automation script to apply branch protection across multiple hosts.
+
+Config template:
+
+```powershell
+Copy-Item scripts\branch_protection.targets.example.json scripts\branch_protection.targets.json
+```
+
+Set your tokens in the current shell:
+
+```powershell
+$env:GITHUB_TOKEN = "<github-token>"
+$env:FORGEJO_TOKEN = "<forgejo-token>"
+```
+
+Or store tokens encrypted at rest in OS keyring (recommended):
+
+```powershell
+python -c "import keyring; keyring.set_password('kinetic-devops-tokens','github.com/my-org','<github-token>')"
+python -c "import keyring; keyring.set_password('kinetic-devops-tokens','forgejo.local/my-org','<forgejo-token>')"
+```
+
+Token resolution order:
+- Environment variable first (for CI/CD and temporary overrides)
+- Keyring fallback (`kinetic-devops-tokens` service by default)
+- Keyring account match order: explicit account, `host/owner`, `host`, then legacy provider keys
+
+Unified smoke wrapper (auto-detect provider from git remote):
+
+```powershell
+python scripts/repo_maker.py
+python scripts/repo_maker.py --apply
+```
+
+Modular package commands (same behavior, namespaced under RepoMaker):
+
+```powershell
+python -m kinetic_devops.repomaker reposmith --apply
+python -m kinetic_devops.repomaker apply --config scripts/branch_protection.targets.json --apply
+```
+
+Installed console scripts (after package install):
+
+```powershell
+repomaker reposmith --apply
+repomaker apply --config scripts/branch_protection.targets.json --apply
+reposmith --apply
+```
+
+Dry-run preview (default):
+
+```powershell
+python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json
+```
+
+Apply changes:
+
+```powershell
+python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json --apply
+```
+
+The script supports:
+- GitHub branch protection via `https://api.github.com`
+- Forgejo branch protection via a configured `forgejo_api_base` (for example `https://forgejo.example.com/api/v1`)
+- Multiple repositories/hosts in one run
+
+Auto-detection behavior:
+- If `owner`/`repo` are omitted for a target, the script uses `git remote.origin.url` from the current repo.
+- If `provider` is omitted, the script infers it from remote host (`github.com` -> `github`; otherwise `forgejo`).
+- For inferred Forgejo targets, `forgejo_api_base` defaults to `<remote-host>/api/v1`.
+
+CI workflow mirrors:
+- GitHub Actions: `.github/workflows/ci-tests.yml`
+- Forgejo Actions: `.forgejo/workflows/ci-tests.yml`
+
+Use branch protection rules on both platforms to require only these blocking checks before merge:
+- `Python Test Gate (required, py3.10)`
+- `Python Test Gate (required, py3.12)`
+
+Keep advisory checks non-required so merges can proceed while still flagging version compatibility issues.
+
+### Full-Stack Forgejo Smoke (API)
+
+You can validate the full lifecycle against a fresh Forgejo repository using API calls only.
+
+Dry-run preview:
+
+```powershell
+$env:FORGEJO_URL = "https://forgejo.local"
+$env:FORGEJO_OWNER = "my-org"
+python scripts/forgejo_fullstack_smoke.py
+```
+
+Apply mode (creates repo, applies branch protection, verifies it, then deletes repo by default):
+
+```powershell
+$env:FORGEJO_TOKEN = "<forgejo-token>"
+python scripts/forgejo_fullstack_smoke.py --apply
+```
+
+Keyring-backed token path (no token env var required):
+
+```powershell
+python scripts/forgejo_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account forgejo.local/my-org
+```
+
+Keep the temporary repository for manual inspection:
+
+```powershell
+python scripts/forgejo_fullstack_smoke.py --apply --keep-repo
+```
+
+Common options:
+- `--forgejo-url` (or `FORGEJO_URL`) - Forgejo base URL
+- `--owner` (or `FORGEJO_OWNER`) - owner/org for repository creation
+- `--owner-type org|user` - creation endpoint type
+- `--repo` - explicit repository name (otherwise generated)
+- `--required-check` - required status check context (default: `Python Test Gate`)
+
+### Full-Stack GitHub Smoke (API)
+
+You can validate the same lifecycle against a fresh GitHub repository using API calls only.
+
+Dry-run preview:
+
+```powershell
+$env:GITHUB_OWNER = "my-org"
+python scripts/github_fullstack_smoke.py
+```
+
+Apply mode (creates repo, applies branch protection, verifies it, then deletes repo by default):
+
+```powershell
+$env:GITHUB_TOKEN = "<github-token>"
+python scripts/github_fullstack_smoke.py --apply
+```
+
+Keyring-backed token path (no token env var required):
+
+```powershell
+python scripts/github_fullstack_smoke.py --apply --token-service kinetic-devops-tokens --token-account github.com/my-org
+```
+
+Keep the temporary repository for manual inspection:
+
+```powershell
+python scripts/github_fullstack_smoke.py --apply --keep-repo
+```
+
+Common options:
+- `--owner` (or `GITHUB_OWNER`) - owner/org for repository creation
+- `--owner-type org|user` - creation endpoint type
+- `--repo` - explicit repository name (otherwise generated)
+- `--required-check` - required status check context (default: `Python Test Gate`)
+
 ---
 
 ## Helper Scripts

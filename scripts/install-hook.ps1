@@ -21,24 +21,34 @@ catch {
 
 # The content of the pre-commit hook script (uses 'sh' for cross-platform compatibility)
 # Git for Windows includes a shell environment to run these hooks.
-$hookContent = @"
+$hookContent = @'
 #!/bin/sh
 #
 # This file is managed by scripts/install-hook.ps1. Do not edit directly.
 
 echo "Running pre-commit checks..."
 
-# Run the python check script
-python scripts/hooks/pre-commit
-EXIT_CODE=\$?
+# Run the python check script (prefer uv when available)
+if command -v uv >/dev/null 2>&1; then
+    uv run python scripts/hooks/pre-commit
+elif command -v python >/dev/null 2>&1; then
+    python scripts/hooks/pre-commit
+elif command -v py >/dev/null 2>&1; then
+    py -3 scripts/hooks/pre-commit
+else
+    echo "Python runtime was not found in PATH. Aborting commit." >&2
+    exit 1
+fi
 
-if [ \$EXIT_CODE -ne 0 ]; then
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ]; then
     echo "Pre-commit checks failed. Aborting commit." >&2
     exit 1
 fi
 
 exit 0
-"@
+'@
 
 $hooksDir = Join-Path $repoRoot ".git\hooks"
 $hookFile = Join-Path $hooksDir "pre-commit"

@@ -4,7 +4,10 @@ import base64
 import sys
 import os
 import requests
-from .base_client import KineticBaseClient
+if __package__:
+    from .base_client import KineticBaseClient
+else:
+    from kinetic_devops.base_client import KineticBaseClient
 
 class KineticEFxService(KineticBaseClient):
     """

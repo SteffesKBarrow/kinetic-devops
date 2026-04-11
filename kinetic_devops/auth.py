@@ -40,8 +40,12 @@ from datetime import timedelta
 from typing import Optional, Dict, Tuple
 
 from urllib.parse import urlparse
-from .KineticCore import KineticCore
-from . import crypto
+if __package__:
+    from .KineticCore import KineticCore
+    from . import crypto
+else:
+    from kinetic_devops.KineticCore import KineticCore
+    from kinetic_devops import crypto
 
 SERVICE_API_KEY = "epicor-kinetic-apikey"
 SERVICE_SERVERS = "epicor-kinetic-servers"
@@ -1193,8 +1197,6 @@ class KineticConfigManager(KineticCore):
         print("\n" + "=" * 60)
 
 def main():
-    mgr = KineticConfigManager(debug=True)
-    
     parser = argparse.ArgumentParser(description="Kinetic Config Manager")
     subparsers = parser.add_subparsers(dest="command")
     
@@ -1218,6 +1220,7 @@ def main():
             p.add_argument("env")
 
     args = parser.parse_args()
+    mgr = KineticConfigManager(debug=True)
     
     try:
         if args.command == "store": mgr.store()

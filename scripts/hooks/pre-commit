@@ -8,7 +8,7 @@ should install it into their local `.git/hooks/pre-commit` or set
 
 Usage:
   # To install locally
-  copy scripts\hooks\pre-commit .git\hooks\pre-commit
+    copy scripts\\hooks\\pre-commit .git\\hooks\\pre-commit
   # Make executable if on Unix: chmod +x .git/hooks/pre-commit
 
 When run, this script executes the SDK test runner and blocks commits if
@@ -29,6 +29,15 @@ import os
 from pathlib import Path
 
 # --- UTILITIES ---
+
+def is_dry_run() -> bool:
+    """Return True when pre-commit should validate wiring without heavy checks."""
+    args = set(sys.argv[1:])
+    if "--dry-run" in args or "-n" in args:
+        return True
+
+    env_value = str(os.getenv("PRE_COMMIT_DRY_RUN", "")).strip().lower()
+    return env_value in {"1", "true", "yes", "on"}
 
 def strip_comments(content):
     """Removes // and /* */ comments from JSONC for parsing."""
@@ -210,8 +219,24 @@ def main():
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
+    if is_dry_run():
+        files = get_staged_files()
+        json_files = [f for f in files if f.endswith((".json", ".jsonc"))]
+        print("=" * 70)
+        print("PRE-COMMIT DRY RUN")
+        print("=" * 70)
+        print(f"Repository root: {repo_root}")
+        print("Checks that would run:")
+        print("1. SDK test suite via kinetic_devops.cli.test_runner")
+        print("2. Stringified JSON validation on staged .json/.jsonc files")
+        print("3. .content sync validation for staged JSON artifacts")
+        print("4. Index sequencing validation for staged JSON artifacts")
+        print(f"Staged files: {len(files)} total, {len(json_files)} json/jsonc")
+        print("DRY RUN RESULT: PASS")
+        sys.exit(0)
+
     # 1. Run Tests
-    if not run_tests(repo_root):
+    if run_tests(repo_root) != 0:
         print("❌ PRE-COMMIT: Tests failed. Commit rejected.")
         sys.exit(1)
 

@@ -15,7 +15,10 @@ import argparse
 import json
 import sys
 import requests
-from .base_client import KineticBaseClient
+if __package__:
+    from .base_client import KineticBaseClient
+else:
+    from kinetic_devops.base_client import KineticBaseClient
 
 class KineticBAQService(KineticBaseClient):
     """BAQ service inheriting session management from BaseClient."""
