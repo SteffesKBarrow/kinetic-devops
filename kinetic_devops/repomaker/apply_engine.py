@@ -342,7 +342,7 @@ def _run_target(target: Target, dry_run: bool) -> None:
     if not target.owner or not target.repo:
         raise BranchProtectionError("Unable to determine owner/repo. Set them explicitly or run inside a git repo.")
 
-    if target.provider == "forgejo" and not target.forgejo_api_base:
+    if target.provider == "forgejo" and not target.forgejo_api_base and not dry_run:
         raise BranchProtectionError(
             "Missing forgejo_api_base. Set it explicitly or run inside a git repo with Forgejo remote origin."
         )
