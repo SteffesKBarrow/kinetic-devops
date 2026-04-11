@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
 
+### Added
+- Post-publish release validation workflow that runs after package publish, verifies the released version is visible on PyPI, and uses native GitHub workflow failure signaling for notifications.
+
 ### Fixed
 - CI and release dry-run behavior now skip token resolution for branch-protection smoke when `--apply` is not enabled.
 - Forgejo dry-run in hosted CI no longer requires an explicit Forgejo API base URL when provider context is inferred.
