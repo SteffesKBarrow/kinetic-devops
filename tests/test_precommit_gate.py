@@ -34,6 +34,7 @@ class TestPreCommitGate(unittest.TestCase):
             ),
         )
         self.assertIn("PRE-COMMIT DRY RUN", result.stdout)
+        self.assertIn("email privacy guard", result.stdout.lower())
         self.assertIn("DRY RUN RESULT: PASS", result.stdout)
 
     def test_git_hook_runner_can_execute_repo_precommit_in_dry_run(self):
@@ -62,6 +63,7 @@ class TestPreCommitGate(unittest.TestCase):
         )
         output = f"{result.stdout}\n{result.stderr}"
         self.assertIn("PRE-COMMIT DRY RUN", output)
+        self.assertIn("email privacy guard", output.lower())
         self.assertIn("DRY RUN RESULT: PASS", output)
 
 
