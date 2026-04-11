@@ -31,17 +31,17 @@ jobs:
           set -euo pipefail
 
           version=$(python - <<'PY'
-import pathlib
+          import pathlib
 
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
+          try:
+            import tomllib
+          except ModuleNotFoundError:
+            import tomli as tomllib
 
-text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-print(tomllib.loads(text)["project"]["version"])
-PY
-)
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          print(tomllib.loads(text)["project"]["version"])
+          PY
+          )
 
           echo "Validating kinetic-devops ${version} on PyPI..."
 
