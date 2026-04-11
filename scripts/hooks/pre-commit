@@ -28,6 +28,10 @@ import re
 import os
 from pathlib import Path
 
+
+SETTINGS_SERVICE = "kinetic-devops-settings"
+NOREPLY_ACCOUNT = "github-noreply-email"
+
 # --- UTILITIES ---
 
 def is_dry_run() -> bool:
@@ -88,6 +92,56 @@ def _public_github_owner() -> str:
     return (match.group(1) or "").strip()
 
 
+def _read_cached_noreply() -> str:
+    # Explicit env override wins and does not require keyring access.
+    env_value = str(os.getenv("KD_GITHUB_NOREPLY_EMAIL", "")).strip()
+    if env_value.endswith("@users.noreply.github.com"):
+        return env_value
+
+    try:
+        import keyring
+
+        value = str(keyring.get_password(SETTINGS_SERVICE, NOREPLY_ACCOUNT) or "").strip()
+        if value.endswith("@users.noreply.github.com"):
+            return value
+    except Exception:
+        pass
+
+    return ""
+
+
+def _cache_noreply(email_value: str) -> None:
+    if not str(email_value or "").endswith("@users.noreply.github.com"):
+        return
+    try:
+        import keyring
+
+        keyring.set_password(SETTINGS_SERVICE, NOREPLY_ACCOUNT, str(email_value).strip())
+    except Exception:
+        pass
+
+
+def _resolve_noreply_email(owner: str) -> str:
+    cached = _read_cached_noreply()
+    if cached:
+        return cached
+
+    login = _git_output(["gh", "api", "user", "--jq", ".login"])
+    user_id = _git_output(["gh", "api", "user", "--jq", ".id"])
+
+    candidate = ""
+    if login and user_id and user_id.isdigit():
+        candidate = f"{user_id}+{login}@users.noreply.github.com"
+    elif login:
+        candidate = f"{login}@users.noreply.github.com"
+    elif owner:
+        candidate = f"{owner}@users.noreply.github.com"
+
+    if candidate:
+        _cache_noreply(candidate)
+    return candidate
+
+
 def ensure_public_email_privacy() -> int:
     """Ensure commit email is GitHub noreply when pushing to public GitHub remote.
 
@@ -105,16 +159,7 @@ def ensure_public_email_privacy() -> int:
     if current_email.endswith("@users.noreply.github.com"):
         return 0
 
-    login = _git_output(["gh", "api", "user", "--jq", ".login"])
-    user_id = _git_output(["gh", "api", "user", "--jq", ".id"])
-
-    candidate = ""
-    if login and user_id and user_id.isdigit():
-        candidate = f"{user_id}+{login}@users.noreply.github.com"
-    elif login:
-        candidate = f"{login}@users.noreply.github.com"
-    elif owner:
-        candidate = f"{owner}@users.noreply.github.com"
+    candidate = _resolve_noreply_email(owner)
 
     if not candidate:
         print("❌ PRE-COMMIT: Could not determine GitHub noreply email for public remote.")
@@ -299,7 +344,7 @@ def main():
         print("=" * 70)
         print(f"Repository root: {repo_root}")
         print("Checks that would run:")
-        print("0. Public GitHub email privacy guard (auto-set noreply by default)")
+        print("0. Public GitHub email privacy guard (auto-set noreply by default, cached in keyring)")
         print("1. SDK test suite via kinetic_devops.cli.test_runner")
         print("2. Stringified JSON validation on staged .json/.jsonc files")
         print("3. .content sync validation for staged JSON artifacts")
