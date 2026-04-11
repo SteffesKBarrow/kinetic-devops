@@ -11,6 +11,7 @@ from kinetic_devops.solutions import (
     _classify_install_message,
     _extract_named_messages,
     _collect_text_findings,
+    _extract_layer_conflicts,
     _extract_solution_table_names,
     _extract_dynamic_rows_payload,
     _resolve_hydrate_tables,
@@ -21,6 +22,28 @@ from kinetic_devops.solutions import (
 
 
 class TestSolutionHelpers(unittest.TestCase):
+    def test_extract_layer_conflicts_identifier_format(self):
+        messages = [
+            "Import cancelled or failed for 'Erp.UI.NonConfEntry~2026-03-27-NonConfEntry-FTT~KNTCCustLayer'.",
+            "Layer with identifier Erp.UI.NonConfEntry~2026-03-27-NonConfEntry-FTT~KNTCCustLayer already exists in another company",
+        ]
+        conflicts = _extract_layer_conflicts(messages)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["application_id"], "Erp.UI.NonConfEntry")
+        self.assertEqual(conflicts[0]["layer_name"], "2026-03-27-NonConfEntry-FTT")
+        self.assertEqual(conflicts[0]["layer_type"], "KNTCCustLayer")
+
+    def test_extract_layer_conflicts_alt_warning_format(self):
+        messages = [
+            "Cannot override all companies customization for application layer 2023-10_AssignedDept Erp.UI.NonConfEntry as the layer already exists in another company.",
+            "Cannot override all companies customization for application layer 2026-03-27-NonConfEntry-FTT Erp.UI.NonConfEntry as the layer already exists in another company.",
+        ]
+        conflicts = _extract_layer_conflicts(messages)
+        self.assertEqual(len(conflicts), 2)
+        self.assertEqual(conflicts[0]["layer_type"], "KNTCCustLayer")
+        self.assertEqual(conflicts[0]["application_id"], "Erp.UI.NonConfEntry")
+        self.assertEqual(conflicts[0]["layer_name"], "2023-10_AssignedDept")
+
     def test_extract_solution_table_names_skips_undefined(self):
         tableset = {
             "EPSolutionDetail": [

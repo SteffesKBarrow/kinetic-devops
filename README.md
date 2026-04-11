@@ -141,6 +141,9 @@ python -m kinetic_devops solutions --env <ENV> --user <USER> build MySolution
 
 # Install a CAB package
 python -m kinetic_devops solutions --env <ENV> --user <USER> install temp/MySolution.cab
+
+# Install with automatic tenant-layer conflict cleanup and one retry
+python -m kinetic_devops solutions --env <ENV> --user <USER> install temp/MySolution.cab --overwrite-duplicate-file --overwrite-duplicate-data --override-directives --auto-clear-layer-conflicts
 ```
 
 Current recreate behavior is intentionally focused on the Solution Workbench definition:

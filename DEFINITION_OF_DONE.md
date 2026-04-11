@@ -84,6 +84,9 @@ uvx twine check dist/*
 
 # entrypoint smoke
 python -m kinetic_devops --help
+uv run kinetic-devops --help
+
+# optional (machine-global PATH check, non-blocking)
 kinetic-devops --help
 ```
 
