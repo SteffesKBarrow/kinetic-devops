@@ -10,6 +10,7 @@ from .solutions import main as solutions_main
 from .zdatatable import main as zdatatable_main
 from .find_sensitive_data import main as find_sensitive_data_main
 from .report_service import main as report_main
+from .repomaker.__main__ import main as repomaker_main
 import importlib.metadata
 
 
@@ -23,6 +24,7 @@ TOOLS: dict[str, Callable[[], None]] = {
     "find": find_sensitive_data_main,
     "efx": efx_main,
     "report": report_main,
+    "repomaker": repomaker_main,
 }
 
 
@@ -40,6 +42,7 @@ def _build_parser(version: str) -> argparse.ArgumentParser:
     subparsers.add_parser("find", help="Find sensitive data in the project")
     subparsers.add_parser("efx", help="Execute Epicor Functions")
     subparsers.add_parser("report", help="Upload and Extract Reports")
+    subparsers.add_parser("repomaker", help="RepoMaker modular tools (apply/reposmith/smoke)")
     return parser
 
 
