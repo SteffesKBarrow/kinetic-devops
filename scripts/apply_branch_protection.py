@@ -74,18 +74,23 @@ def _run_target(target: Target, dry_run: bool) -> None:
             "Missing forgejo_api_base. Set it explicitly or run inside a git repo with Forgejo remote origin."
         )
 
-    token, source, source_name, source_account = _resolve_token(target)
+    token = ""
+    source = ""
+    source_name = ""
+    source_account = ""
+    if not dry_run:
+        token, source, source_name, source_account = _resolve_token(target)
 
-    if source == "env":
-        print(f"  token_source: env:{source_name}")
-    elif source == "keyring":
-        print(f"  token_source: keyring:{source_name}/{source_account}")
+        if source == "env":
+            print(f"  token_source: env:{source_name}")
+        elif source == "keyring":
+            print(f"  token_source: keyring:{source_name}/{source_account}")
 
-    if not token and not dry_run:
-        raise BranchProtectionError(
-            "Token not found. "
-            f"Set env var '{target.token_env}' or keyring '{source_name}' account '{source_account}'."
-        )
+        if not token:
+            raise BranchProtectionError(
+                "Token not found. "
+                f"Set env var '{target.token_env}' or keyring '{source_name}' account '{source_account}'."
+            )
 
     if target.provider == "github":
         _apply_github(target, token=token, dry_run=dry_run)
