@@ -58,6 +58,78 @@ def get_staged_files():
 def get_repo_root():
     return Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).strip().decode('utf-8'))
 
+
+def _env_true(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _git_output(args):
+    try:
+        return subprocess.check_output(args, text=True).strip()
+    except Exception:
+        return ""
+
+
+def _public_github_owner() -> str:
+    url = _git_output(["git", "remote", "get-url", "public"])
+    if not url:
+        return ""
+
+    if "github.com" not in url.lower():
+        return ""
+
+    # Examples:
+    # - https://github.com/owner/repo.git
+    # - git@github.com:owner/repo.git
+    # - ssh://git@github.com/owner/repo.git
+    match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return (match.group(1) or "").strip()
+
+
+def ensure_public_email_privacy() -> int:
+    """Ensure commit email is GitHub noreply when pushing to public GitHub remote.
+
+    Default behavior is auto-fix. Set KD_SKIP_EMAIL_PRIVACY=1 to disable.
+    """
+    if _env_true("KD_SKIP_EMAIL_PRIVACY"):
+        print("⚠️  PRE-COMMIT: Skipping email privacy guard (KD_SKIP_EMAIL_PRIVACY=1).")
+        return 0
+
+    owner = _public_github_owner()
+    if not owner:
+        return 0
+
+    current_email = _git_output(["git", "config", "--get", "user.email"])
+    if current_email.endswith("@users.noreply.github.com"):
+        return 0
+
+    login = _git_output(["gh", "api", "user", "--jq", ".login"])
+    user_id = _git_output(["gh", "api", "user", "--jq", ".id"])
+
+    candidate = ""
+    if login and user_id and user_id.isdigit():
+        candidate = f"{user_id}+{login}@users.noreply.github.com"
+    elif login:
+        candidate = f"{login}@users.noreply.github.com"
+    elif owner:
+        candidate = f"{owner}@users.noreply.github.com"
+
+    if not candidate:
+        print("❌ PRE-COMMIT: Could not determine GitHub noreply email for public remote.")
+        print("   Set git user.email to a noreply address or set KD_SKIP_EMAIL_PRIVACY=1 to override.")
+        return 1
+
+    result = subprocess.run(["git", "config", "--local", "user.email", candidate], capture_output=True)
+    if result.returncode != 0:
+        print("❌ PRE-COMMIT: Failed to set local git user.email to noreply.")
+        print("   Set git user.email manually or set KD_SKIP_EMAIL_PRIVACY=1 to override.")
+        return 1
+
+    print(f"🔒 PRE-COMMIT: Set local git user.email to GitHub noreply ({candidate}).")
+    return 0
+
 # --- CHECK 1: TEST SUITE ---
 
 def run_tests(repo_root):
@@ -227,6 +299,7 @@ def main():
         print("=" * 70)
         print(f"Repository root: {repo_root}")
         print("Checks that would run:")
+        print("0. Public GitHub email privacy guard (auto-set noreply by default)")
         print("1. SDK test suite via kinetic_devops.cli.test_runner")
         print("2. Stringified JSON validation on staged .json/.jsonc files")
         print("3. .content sync validation for staged JSON artifacts")
@@ -234,6 +307,11 @@ def main():
         print(f"Staged files: {len(files)} total, {len(json_files)} json/jsonc")
         print("DRY RUN RESULT: PASS")
         sys.exit(0)
+
+    # 0. Enforce public commit email privacy defaults.
+    if ensure_public_email_privacy() != 0:
+        print("❌ PRE-COMMIT: Email privacy check failed. Commit rejected.")
+        sys.exit(1)
 
     # 1. Run Tests
     if run_tests(repo_root) != 0:
