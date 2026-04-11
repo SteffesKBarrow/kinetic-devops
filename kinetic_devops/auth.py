@@ -1197,8 +1197,6 @@ class KineticConfigManager(KineticCore):
         print("\n" + "=" * 60)
 
 def main():
-    mgr = KineticConfigManager(debug=True)
-    
     parser = argparse.ArgumentParser(description="Kinetic Config Manager")
     subparsers = parser.add_subparsers(dest="command")
     
@@ -1222,6 +1220,7 @@ def main():
             p.add_argument("env")
 
     args = parser.parse_args()
+    mgr = KineticConfigManager(debug=True)
     
     try:
         if args.command == "store": mgr.store()

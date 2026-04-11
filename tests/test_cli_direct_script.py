@@ -4,6 +4,7 @@ These tests guard against relative-import breakage when running module files
 as scripts, e.g. ``python kinetic_devops/solutions.py --help``.
 """
 
+import os
 import subprocess
 import sys
 import unittest
@@ -26,9 +27,18 @@ class TestDirectScriptCli(unittest.TestCase):
                 script_path = package_dir / script_name
                 self.assertTrue(script_path.is_file(), f"Missing script: {script_path}")
 
+                env = os.environ.copy()
+                existing_pythonpath = env.get("PYTHONPATH", "")
+                env["PYTHONPATH"] = (
+                    str(repo_root)
+                    if not existing_pythonpath
+                    else f"{str(repo_root)}{os.pathsep}{existing_pythonpath}"
+                )
+
                 result = subprocess.run(
                     [sys.executable, str(script_path), "--help"],
                     cwd=str(repo_root),
+                    env=env,
                     capture_output=True,
                     text=True,
                     timeout=15,
