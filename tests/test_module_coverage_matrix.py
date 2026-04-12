@@ -38,7 +38,6 @@ SCRIPT_MODULE_MATRIX = {
     "apply_branch_protection.py",
     "build_kinetic_app.py",
     "build_kinetic_reports.py",
-    "doctor.py",
     "env_init.py",
     "find_sensitive_data.py",
     "generate-commit.py",

@@ -28,6 +28,12 @@ $hookContent = @'
 
 echo "Running pre-commit checks..."
 
+# Avoid hardlink warnings if the uv cache is on a different drive
+export UV_LINK_MODE=copy
+
+# Enable UTF-8 Mode for Python 3.7+ (fixes UnicodeEncodeError on Windows)
+export PYTHONUTF8=1
+
 # Run the python check script (prefer uv when available)
 if command -v uv >/dev/null 2>&1; then
     uv run python scripts/hooks/pre-commit

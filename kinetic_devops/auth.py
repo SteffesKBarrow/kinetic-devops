@@ -39,6 +39,10 @@ import os
 from datetime import timedelta
 from typing import Optional, Dict, Tuple
 
+# Ensure UTF-8 encoding for Windows terminals to support emojis
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from urllib.parse import urlparse
 if __package__:
     from .KineticCore import KineticCore

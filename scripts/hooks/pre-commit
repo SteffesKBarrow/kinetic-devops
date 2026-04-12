@@ -26,6 +26,11 @@ import subprocess
 import json
 import re
 import os
+
+# Ensure UTF-8 encoding for Windows terminals to support emojis
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from pathlib import Path
 
 
@@ -148,7 +153,7 @@ def ensure_public_email_privacy() -> int:
     Default behavior is auto-fix. Set KD_SKIP_EMAIL_PRIVACY=1 to disable.
     """
     if _env_true("KD_SKIP_EMAIL_PRIVACY"):
-        print("   PRE-COMMIT: Skipping email privacy guard (KD_SKIP_EMAIL_PRIVACY=1).")
+        print("⚠️  PRE-COMMIT: Skipping email privacy guard (KD_SKIP_EMAIL_PRIVACY=1).")
         return 0
 
     owner = _public_github_owner()
@@ -162,17 +167,17 @@ def ensure_public_email_privacy() -> int:
     candidate = _resolve_noreply_email(owner)
 
     if not candidate:
-        print("  PRE-COMMIT: Could not determine GitHub noreply email for public remote.")
+        print("❌ PRE-COMMIT: Could not determine GitHub noreply email for public remote.")
         print("   Set git user.email to a noreply address or set KD_SKIP_EMAIL_PRIVACY=1 to override.")
         return 1
 
     result = subprocess.run(["git", "config", "--local", "user.email", candidate], capture_output=True)
     if result.returncode != 0:
-        print("  PRE-COMMIT: Failed to set local git user.email to noreply.")
+        print("❌ PRE-COMMIT: Failed to set local git user.email to noreply.")
         print("   Set git user.email manually or set KD_SKIP_EMAIL_PRIVACY=1 to override.")
         return 1
 
-    print(f"  PRE-COMMIT: Set local git user.email to GitHub noreply ({candidate}).")
+    print(f"🔒 PRE-COMMIT: Set local git user.email to GitHub noreply ({candidate}).")
     return 0
 
 # --- CHECK 1: TEST SUITE ---
@@ -192,12 +197,12 @@ def run_tests(repo_root):
     
     if result.returncode == 0:
         print("\n" + "=" * 70)
-        print("  PRE-COMMIT: All tests passed. Commit allowed.")
+        print("✅ PRE-COMMIT: All tests passed. Commit allowed.")
         print("=" * 70)
         return 0
     else:
         print("\n" + "=" * 70)
-        print("  PRE-COMMIT: Tests failed. Commit blocked.")
+        print("❌ PRE-COMMIT: Tests failed. Commit blocked.")
         print("=" * 70)
         return 1
 
@@ -317,12 +322,12 @@ def validate_and_fix_indices(file_path):
 
         if modified:
             if is_jsonc:
-                print(f"  PRE-COMMIT: Detected index mismatch in {file_path}, but skipped auto-fix because it contains comments (JSONC).")
+                print(f"⚠️  detected index mismatch in {file_path}, but skipped auto-fix because it contains comments (JSONC).")
                 return False
             else:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
-                print(f"  PRE-COMMIT: Auto-fixed sequence indices in {file_path}")
+                print(f"🔧 Auto-fixed sequence indices in {file_path}")
                 return False # Return False to block commit so user can stage the fix
 
         return True
@@ -355,12 +360,12 @@ def main():
 
     # 0. Enforce public commit email privacy defaults.
     if ensure_public_email_privacy() != 0:
-        print("  PRE-COMMIT: Email privacy check failed. Commit rejected.")
+        print("❌ PRE-COMMIT: Email privacy check failed. Commit rejected.")
         sys.exit(1)
 
     # 1. Run Tests
     if run_tests(repo_root) != 0:
-        print("  PRE-COMMIT: Tests failed. Commit rejected.")
+        print("❌ PRE-COMMIT: Tests failed. Commit rejected.")
         sys.exit(1)
 
     files = get_staged_files()
@@ -373,22 +378,22 @@ def main():
         if '.content.' in f: continue
 
         if is_stringified_json(Path(f).read_text(encoding='utf-8')):
-            print(f"  REJECTED: {f} appears to contain stringified JSON.")
+            print(f"❌ REJECTED: {f} appears to contain stringified JSON.")
             errors += 1
         
         if not check_content_sync(f):
-            print(f"  REJECTED: {f} is out of sync with its .content file.")
+            print(f"❌ REJECTED: {f} is out of sync with its .content file.")
             errors += 1
             
         if not validate_and_fix_indices(f):
-            print(f"  REJECTED: {f} had index errors (Auto-fix applied? check file).")
+            print(f"❌ REJECTED: {f} had index errors (Auto-fix applied? check file).")
             print(f"   Action: 'git add {f}' and commit again.")
             errors += 1
 
     if errors > 0:
         sys.exit(1)
     
-    print("  PRE-COMMIT: All checks passed.")
+    print("✅ PRE-COMMIT: All checks passed.")
     sys.exit(0)
 
 if __name__ == "__main__":
