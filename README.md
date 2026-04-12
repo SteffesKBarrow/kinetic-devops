@@ -6,14 +6,13 @@
 
 ## Features
 
-- 🔐 **Secure credential management** — OS keyring-backed encryption, no plaintext secrets
-- 🔄 **Multi-environment support** — Seamlessly switch between Dev/Test/Prod
+- 🔐 **Secure credential management** — OS keyring-backed encryption with optional Zero-Knowledge Vault mode and integrated maintenance tools (`diagnose`, `find-orphans`, `full-wipe`).
+-  **Multi-environment support** — Seamlessly switch between Dev/Test/Prod
 - 🛠️ **Ready-to-use Service Clients** — High-level clients for BAQ, BOReader, Reports, Tax, and more, built on a robust base client with wire logging and data redaction.
 - 🚀 **Extensible Project Templates** — A "batteries-included" project structure with auto-discovery for creating your own reusable functions, layers, and scheduled jobs.
 - 🤖 **CI/CD Ready** — Designed for automation with environment variable support, programmatic APIs, and pre-commit hooks for local validation.
-- 📜 **Powerful CLI Tools** — Includes helper scripts for environment initialization, health validation, and common administrative tasks like configuration syncing.
+- 📜 **Powerful CLI Tools** — Includes tools for environment initialization and common administrative tasks like configuration syncing. Unified test runner includes built-in health validation.
 - 🧩 **Layer Lifecycle Operations** — Native MetaFX support for core layer import/delete operations (`ImportLayers` / `BulkDeleteLayers`) with structured error reports.
-- 🤖 **CI/CD ready** — Environment variables, programmatic API, pre-commit hooks
 - 📦 **Modular architecture** — Extend with custom project submodules
 
 ## Quick Start
@@ -21,15 +20,15 @@
 ### Windows PowerShell
 ```powershell
 .\scripts\env_init.ps1
-python -m kinetic_devops.auth store
-python scripts/validate.py
+uv run kinetic_devops auth store
+uv run python -m tests.test_runner --validate
 ```
 
 ### Linux/macOS
 ```bash
-python scripts/env_init.py
-python -m kinetic_devops.auth store
-python scripts/validate.py
+uv run python scripts/env_init.py
+uv run python -m kinetic_devops.auth store
+uv run python -m tests.test_runner --validate
 ```
 
 ## Usage
@@ -199,10 +198,9 @@ pip install kinetic-devops
 
 From source with `uv`:
 ```bash
-git clone https://github.com/your-org/kinetic-devops.git
+git clone https://github.com/SteffesKBarrow/kinetic-devops.git
 cd kinetic-devops
-uv sync
-uv pip install -e .
+uv run kinetic-devops
 ```
 
 ## License

@@ -72,7 +72,7 @@ These are high-value and low-friction additions:
 
 ```bash
 # full local validation
-python scripts/validate.py
+python -m tests.test_runner --validate
 
 # targeted and full tests
 python -m unittest tests.test_entry_router tests.test_cli

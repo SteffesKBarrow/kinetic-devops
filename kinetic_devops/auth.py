@@ -1061,6 +1061,164 @@ class KineticConfigManager(KineticCore):
         except:
             pass
 
+    def reset_pointer(self):
+        """Deletes just the global LAST_GLOBAL_SESSION pointer."""
+        try:
+            keyring.delete_password("KineticSDK", "LAST_GLOBAL_SESSION")
+            print("✅ Global Quick-Connect pointer has been reset.")
+        except Exception:
+            print("⚠️ No pointer found to reset.")
+
+    def full_wipe(self):
+        """Nuclear option: Deletes all server configs, tokens, and pointers."""
+        print("\n🚨 WARNING: This will delete ALL Kinetic configurations and tokens.")
+        if input("Proceed with full wipe? (y/N): ").strip().lower() != 'y':
+            print("Aborted.")
+            return
+
+        # 1. Clear sessions first (while we still have the config to find the slots)
+        self.clean_sessions()
+
+        # 2. Clear pointer
+        self.reset_pointer()
+
+        # 3. Delete the master config
+        try:
+            keyring.delete_password(SERVICE_SERVERS, "config")
+            print("✅ Master server configuration deleted.")
+        except Exception:
+            pass
+        print("\n✨ Keyring is now clean. Re-run 'auth store' to begin again.")
+
+    def dump(self):
+        """Dumps all raw keyring data to console for debugging (unredacted)."""
+        print("=== RAW KEYRING DUMP ===")
+        servers = self._get_server_dict()
+        print(f"\n[CONFIG: {SERVICE_SERVERS}]\n{json.dumps(servers, indent=2)}")
+
+        last_ptr = keyring.get_password("KineticSDK", "LAST_GLOBAL_SESSION")
+        print(f"\n[POINTER: LAST_GLOBAL_SESSION]\nValue: {last_ptr}")
+
+        if last_ptr:
+            meta = self._get_token_meta(last_ptr)
+            print(f"Pointer Metadata: {json.dumps(meta, indent=2)}")
+
+        print("\n[ACTIVE SESSION SLOTS]")
+        for name, cfg in servers.items():
+            api_key = cfg.get('api_key', '')
+            for user in cfg.get('sessions', []):
+                slot = self._get_token_key(name, user, api_key)
+                meta = self._get_token_meta(slot)
+                status = "EXISTS" if meta else "MISSING"
+                print(f"\nSlot: {slot} ({status})")
+                if meta:
+                    print(json.dumps(meta, indent=2))
+
+    def diagnose(self):
+        """
+        Provides a safe, redacted summary of all environments and active sessions.
+        Replaces scripts/diagnose_keyring_redacted.py.
+        """
+        servers = self._get_server_dict()
+        print("\n--- KEYRING DIAGNOSTIC SUMMARY (REDACTED) ---\n")
+        if not servers:
+            print("No servers config found.")
+            return
+
+        last_ptr = keyring.get_password("KineticSDK", "LAST_GLOBAL_SESSION")
+
+        for name, cfg in servers.items():
+            # 1. Setup Redaction Mapping for this env
+            companies_raw = cfg.get("companies", "") or cfg.get('company', '')
+            co_items = [c.strip() for c in str(companies_raw).split(',') if c.strip()]
+            co_map = {f"CO{i}": it for i, it in enumerate(co_items, 1)}
+            co_list = list(co_map.keys())
+
+            # 2. Redact Header info
+            api_key = cfg.get("api_key", "")
+            redacted_key = f"{api_key[:4]}..." if len(api_key) > 4 else "****"
+            
+            print(f"Nickname: {name}")
+            print(f"  API Key:   {redacted_key}")
+            print(f"  Companies: {', '.join(co_list) if co_list else '<none>'}")
+
+            # 3. Session info
+            sessions = cfg.get("sessions") or []
+            print(f"  Sessions:  {len(sessions)} recorded -> {[self.redact_value(u) for u in sessions]}")
+
+            for u in sessions:
+                slot = self._get_token_key(name, u, api_key)
+                meta = self._get_token_meta(slot)
+                
+                if meta:
+                    status = "✅ ACTIVE" if meta.get("_is_valid") else "❌ EXPIRED"
+                    rem = meta.get("_remaining", 0)
+                    co = meta.get("current_company", "<none>")
+                    # Find which COx it is
+                    redacted_co = next((k for k, v in co_map.items() if v.upper() == str(co).upper()), "UNK")
+                    
+                    print(f"    - User: {self.redact_value(meta.get('user_id') or u):<15} | {status} | {str(timedelta(seconds=rem)):<12} | Co: {redacted_co}")
+                else:
+                    print(f"    - User: {self.redact_value(u):<15} | ⚠️  NO TOKEN")
+            print("")
+
+        # 4. Global Pointer info
+        print("--- GLOBAL POINTER ---")
+        if last_ptr:
+            print(f"LAST_GLOBAL_SESSION: ...{last_ptr[-12:].upper()}")
+            meta = self._get_token_meta(last_ptr)
+            if meta:
+                status = "✅ ACTIVE" if meta.get("_is_valid") else "❌ EXPIRED"
+                rem = meta.get("_remaining", 0)
+                env = meta.get("env_name", "???")
+                user = self.redact_value(meta.get("user_id", "???"))
+                print(f"  Status: {status}, {str(timedelta(seconds=rem))} left, Env: {env}, User: {user}")
+            else:
+                print("  Pointer slot exists but no metadata found.")
+        else:
+            print("No LAST_GLOBAL_SESSION pointer found.")
+        print("\nDone.")
+
+    def find_orphans(self, delete: bool = False):
+        """
+        Heuristic scan for tokens in keyring that aren't in any environment's session list.
+        Keyring doesn't support prefix listing, so we check common patterns.
+        """
+        print("\n🔍 SCANNING FOR ORPHANED TOKENS (Heuristic)\n")
+        
+        servers = self._get_server_dict()
+        common_users = ["admin", "manager", "api", "svc", "service", "test", "user", "epicor", "kinetic"]
+        orphans_found = []
+
+        for name, cfg in servers.items():
+            api_key = cfg.get('api_key', '')
+            sessions = [s.lower() for s in cfg.get('sessions', [])]
+            
+            for user in common_users:
+                if user in sessions:
+                    continue
+                
+                slot = self._get_token_key(name, user, api_key)
+                raw = keyring.get_password(slot, "current_token")
+                if raw:
+                    orphans_found.append((name, user, slot))
+                    print(f"❌ ORPHAN FOUND: {name} / {user} -> {slot}")
+
+        if not orphans_found:
+            print("✅ No orphaned tokens found using common username patterns.")
+            return
+
+        if delete:
+            print(f"\n🧹 Purging {len(orphans_found)} orphaned tokens...")
+            for _, _, slot in orphans_found:
+                try:
+                    keyring.delete_password(slot, "current_token")
+                    print(f"   ✅ Deleted {slot}")
+                except: pass
+            print("✨ Cleanup complete.")
+        else:
+            print(f"\nFound {len(orphans_found)} orphaned tokens. Run with 'find-orphans --delete' to purge them.")
+
     def validate(self):
         """
         Validate keyring records against schema and auto-repair invalid entries.
@@ -1208,6 +1366,13 @@ def main():
     subparsers.add_parser("panic")
     subparsers.add_parser("validate")
     subparsers.add_parser("clean-sessions")
+    subparsers.add_parser("reset-pointer")
+    subparsers.add_parser("full-wipe")
+    subparsers.add_parser("dump")
+    subparsers.add_parser("diagnose")
+    
+    orphan_p = subparsers.add_parser("find-orphans", help="Scan for tokens not associated with any config")
+    orphan_p.add_argument("--delete", action="store_true", help="Purge found orphans")
     
     sync_p = subparsers.add_parser("sync-companies")
     sync_p.add_argument("env")
@@ -1312,6 +1477,11 @@ def main():
         elif args.command == "panic": mgr.panic()
         elif args.command == "validate": mgr.validate()
         elif args.command == "clean-sessions": mgr.clean_sessions()
+        elif args.command == "reset-pointer": mgr.reset_pointer()
+        elif args.command == "full-wipe": mgr.full_wipe()
+        elif args.command == "dump": mgr.dump()
+        elif args.command == "diagnose": mgr.diagnose()
+        elif args.command == "find-orphans": mgr.find_orphans(delete=args.delete)
         elif args.command == "sync-companies": mgr.sync_companies(args.env)
         elif args.command == "inspect": mgr.inspect(args.env)
         elif args.command == "use": mgr.use(args.env)
