@@ -73,3 +73,5 @@ if __name__ == "__main__":
     input_file_path = sys.argv[1]
     result = embed_and_escape_content(input_file_path)
     print(result)
+    if result.startswith("Error:"):
+        sys.exit(1)

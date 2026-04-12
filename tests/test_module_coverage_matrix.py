@@ -37,8 +37,10 @@ PACKAGE_MODULE_MATRIX = {
 SCRIPT_MODULE_MATRIX = {
     "apply_branch_protection.py",
     "build_kinetic_app.py",
+    "build_kinetic_custom_layer.py",
     "build_kinetic_reports.py",
     "env_init.py",
+    "extract_and_format_content.py",
     "find_sensitive_data.py",
     "generate-commit.py",
     "git_stash_review.py",
