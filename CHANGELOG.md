@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a5] - 2026-04-12
+
+**Status: ⚠️ ALPHA** — Early development.
+
+### Changed
+- Refactored and consolidated authentication utilities into `kinetic_devops.auth` to improve credential lifecycle management.
+- Standardized auth-related error handling across `KineticBaseClient` and service modules.
+
 ## [0.1.0a4] - 2026-04-10
 
 **Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
