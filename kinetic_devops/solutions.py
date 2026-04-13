@@ -21,8 +21,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 if __package__:
     from .base_client import KineticBaseClient
+    from .metafx import KineticMetafetcher
+    from .zdatatable import KineticZDataTableService
 else:
     from kinetic_devops.base_client import KineticBaseClient
+    from kinetic_devops.metafx import KineticMetafetcher
+    from kinetic_devops.zdatatable import KineticZDataTableService
 
 
 SKIP_RECREATE_TABLES = {
@@ -94,14 +98,6 @@ def _export_package_url(base_url: str, company: str, method_name: str) -> str:
     return f"{base_url.rstrip('/')}/api/v2/odata/{company}/Ice.BO.ExportPackageSvc/{method_name}"
 
 
-def _zdt_url(base_url: str, company: str, method_name: str) -> str:
-    return f"{base_url.rstrip('/')}/api/v2/odata/{company}/Ice.BO.ZDataTableSvc/{method_name}"
-
-
-def _metafx_url(base_url: str, company: str, method_name: str) -> str:
-    return f"{base_url.rstrip('/')}/api/v2/odata/{company}/Ice.Lib.MetaFXSvc/{method_name}"
-
-
 def _replace_solution_ids(value: Any, source_id: str, target_id: str) -> Any:
     if isinstance(value, dict):
         return {key: _replace_solution_ids(item, source_id, target_id) for key, item in value.items()}
@@ -171,6 +167,59 @@ def _count_solution_membership_rows(tableset: Dict[str, Any]) -> Dict[str, int]:
     return {
         "detail": len(detail_rows) if isinstance(detail_rows, list) else 0,
         "package": len(package_rows) if isinstance(package_rows, list) else 0,
+    }
+
+
+def _as_clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _solution_registration_signature(tableset: Dict[str, Any]) -> Dict[str, List[str]]:
+    detail_rows = tableset.get("EPSolutionDetail") or []
+    package_rows = tableset.get("EPSolutionPackage") or []
+
+    detail_sig: List[str] = []
+    for row in detail_rows if isinstance(detail_rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        detail_sig.append(
+            "|".join(
+                [
+                    _as_clean_text(row.get("TableName")),
+                    _as_clean_text(row.get("SolutionTypeID")),
+                    _as_clean_text(row.get("Selected")),
+                    _as_clean_text(row.get("Key1")),
+                ]
+            )
+        )
+
+    package_sig: List[str] = []
+    for row in package_rows if isinstance(package_rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        package_sig.append(
+            "|".join(
+                [
+                    _as_clean_text(row.get("TableName")),
+                    _as_clean_text(row.get("Key1")),
+                ]
+            )
+        )
+
+    return {
+        "detail": sorted(detail_sig),
+        "package": sorted(package_sig),
+    }
+
+
+def _diff_signatures(source_sig: List[str], target_sig: List[str]) -> Dict[str, List[str]]:
+    source_only = sorted(set(source_sig) - set(target_sig))
+    target_only = sorted(set(target_sig) - set(source_sig))
+    return {
+        "missing_in_target": source_only,
+        "extra_in_target": target_only,
     }
 
 
@@ -384,77 +433,27 @@ class KineticSolutionService(KineticBaseClient):
         url = f"{self.config['url'].rstrip('/')}/api/v2/odata/{target_co}/Ice.Lib.FileTransferSvc/{method_name}"
         return self.execute_request("POST", url, payload=body or {})
 
-    def _call_metafx(self, method_name: str, body: Optional[Dict[str, Any]] = None, company: str = "") -> Dict[str, Any]:
-        target_co = company if company else self.config["company"]
-        url = _metafx_url(self.config["url"], target_co, method_name)
-        return self.execute_request("POST", url, payload=body or {})
-
-    def get_metafx_layers(
-        self,
-        view_id: str,
-        type_code: str,
-        device_type: str = "Desktop",
-        include_unpublished_layers: bool = True,
-        company: str = "",
-    ) -> List[Dict[str, Any]]:
-        response = self._call_metafx(
-            "GetLayers",
-            {
-                "request": {
-                    "ViewId": view_id,
-                    "TypeCode": type_code,
-                    "DeviceType": device_type,
-                    "IncludeUnpublishedLayers": bool(include_unpublished_layers),
-                }
-            },
-            company=company,
-        )
-        rows = response.get("returnObj") or []
-        if isinstance(rows, list):
-            return [row for row in rows if isinstance(row, dict)]
-        return []
-
-    def bulk_delete_metafx_layers(self, layers_to_delete: List[Dict[str, Any]], company: str = "") -> Dict[str, Any]:
-        payload_rows: List[Dict[str, Any]] = []
-        for layer in layers_to_delete:
-            payload_rows.append(
-                {
-                    "Id": layer.get("Id"),
-                    "SubType": layer.get("SubType"),
-                    "LastUpdated": layer.get("LastUpdated"),
-                    "IsPublished": bool(layer.get("IsPublished", False)),
-                    "IsSilentExport": bool(layer.get("IsSilentExport", False)),
-                    "ViewId": layer.get("ViewId"),
-                    "TypeCode": layer.get("TypeCode"),
-                    "Company": layer.get("Company"),
-                    "LayerName": layer.get("LayerName"),
-                    "DeviceType": layer.get("DeviceType") or "Desktop",
-                    "CGCCode": layer.get("CGCCode") or "",
-                    "SystemFlag": bool(layer.get("SystemFlag", False)),
-                    "HasDraftContent": bool(layer.get("HasDraftContent", False)),
-                    "LastUpdatedBy": layer.get("LastUpdatedBy"),
-                }
+    def _get_metafx_service(self) -> KineticMetafetcher:
+        svc = getattr(self, "_metafx_service", None)
+        if svc is None:
+            svc = KineticMetafetcher(
+                env_nickname=self.config.get("nickname") or None,
+                user_id=self.config.get("user_id") or None,
+                company_id=self.config.get("company") or None,
             )
+            self._metafx_service = svc
+        return svc
 
-        return self._call_metafx(
-            "BulkDeleteLayers",
-            {"layersToDelete": payload_rows},
-            company=company,
-        )
-
-    def delete_metafx_layer(self, layer_row: Dict[str, Any], company: str = "") -> Dict[str, Any]:
-        request = {
-            "ViewId": layer_row.get("ViewId"),
-            "Company": layer_row.get("Company"),
-            "TypeCode": layer_row.get("TypeCode"),
-            "LayerName": layer_row.get("LayerName"),
-            "DeviceType": layer_row.get("DeviceType") or "Desktop",
-            "CGCCode": layer_row.get("CGCCode") or "",
-            "UserName": self.config.get("user_id") or "",
-            "IncludeDraftContent": bool(layer_row.get("HasDraftContent", True)),
-            "UxAppVersion": 0,
-        }
-        return self._call_metafx("DeleteLayer", {"request": request}, company=company)
+    def _get_zdatatable_service(self) -> KineticZDataTableService:
+        svc = getattr(self, "_zdatatable_service", None)
+        if svc is None:
+            svc = KineticZDataTableService(
+                env_nickname=self.config.get("nickname") or None,
+                user_id=self.config.get("user_id") or None,
+                company_id=self.config.get("company") or None,
+            )
+            self._zdatatable_service = svc
+        return svc
 
     def _delete_layer_conflict(
         self,
@@ -464,7 +463,8 @@ class KineticSolutionService(KineticBaseClient):
         company: str = "",
     ) -> Dict[str, Any]:
         current_company = str(company or self.config.get("company") or "").strip()
-        scan_rows = self.get_metafx_layers(
+        metafx_service = self._get_metafx_service()
+        scan_rows = metafx_service.get_layers(
             view_id=application_id,
             type_code=layer_type,
             device_type="Desktop",
@@ -500,7 +500,7 @@ class KineticSolutionService(KineticBaseClient):
         delete_results: List[Dict[str, Any]] = []
         for row in to_delete:
             try:
-                delete_resp = self.delete_metafx_layer(row, company=company)
+                delete_resp = metafx_service.delete_layer(row, company=company)
                 delete_results.append(
                     {
                         "success": True,
@@ -512,7 +512,7 @@ class KineticSolutionService(KineticBaseClient):
             except Exception as exc:
                 # Some tenants only allow bulk delete for specific layer types.
                 try:
-                    bulk_resp = self.bulk_delete_metafx_layers([row], company=company)
+                    bulk_resp = metafx_service.bulk_delete_layers([row], company=company)
                     delete_results.append(
                         {
                             "success": True,
@@ -604,6 +604,40 @@ class KineticSolutionService(KineticBaseClient):
     def delete_solution(self, solution_id: str, company: str = "") -> None:
         self._call("DeleteByID", {"solutionID": solution_id}, company=company)
 
+    def remove_solution(self, solution_id: str, company: str = "", require_exists: bool = False) -> Dict[str, Any]:
+        exists_before = self.solution_exists(solution_id, company=company)
+        if not exists_before:
+            if require_exists:
+                raise ValueError(f"Solution does not exist in target environment: {solution_id}")
+            return {
+                "success": True,
+                "solution_id": solution_id,
+                "company": company or self.config.get("company", ""),
+                "exists_before": False,
+                "exists_after": False,
+                "removed_membership": {"detail": 0, "package": 0},
+                "note": "No-op: solution did not exist.",
+            }
+
+        current = self.get_solution(solution_id, company=company).get("returnObj") or {}
+        before_membership = _count_solution_membership_rows(current)
+
+        self.delete_solution(solution_id, company=company)
+
+        exists_after = self.solution_exists(solution_id, company=company)
+        if exists_after:
+            raise RuntimeError(f"Solution removal failed; solution still exists: {solution_id}")
+
+        return {
+            "success": True,
+            "solution_id": solution_id,
+            "company": company or self.config.get("company", ""),
+            "exists_before": True,
+            "exists_after": False,
+            "removed_membership": before_membership,
+            "note": "Removed Solution Workbench registration rows (definition/membership). Underlying artifacts are not globally deleted by this operation.",
+        }
+
     def add_items_to_solution_and_save(
         self,
         solution_id: str,
@@ -640,22 +674,7 @@ class KineticSolutionService(KineticBaseClient):
         return _first_list_from_payload(response)
 
     def _zdatatable_exists(self, system_code: str, table_id: str, company: str = "") -> bool:
-        target_co = company or self.config["company"]
-        try:
-            response = self.execute_request(
-                "POST",
-                _zdt_url(self.config["url"], target_co, "GetByIDUd"),
-                payload={"systemCode": system_code, "dataTableID": table_id},
-            )
-        except Exception as exc:
-            status_code = getattr(getattr(exc, "response", None), "status_code", None)
-            if status_code in (400, 404):
-                return False
-            raise
-
-        ds = response.get("returnObj") or {}
-        rows = ds.get("ZDataTable") or []
-        return bool(rows)
+        return self._get_zdatatable_service().exists_ud_table(system_code, table_id, company=company)
 
     def _build_selected_solution_rows_from_dynamic(
         self,
@@ -1002,19 +1021,40 @@ class KineticSolutionService(KineticBaseClient):
             delete_previous_install=delete_previous_install,
             override_directives=override_directives,
         )
-        response = self._call(
-            "Install",
-            {"cabData": cab_data, "settings": settings},
-            company=company,
-        )
+
+        try:
+            response = self._call(
+                "Install",
+                {"cabData": cab_data, "settings": settings},
+                company=company,
+            )
+        except Exception as exc:
+            # Catch error-status responses that might contain conflict details in the body
+            resp_obj = getattr(exc, "response", None)
+            if resp_obj is not None:
+                try:
+                    response = resp_obj.json()
+                except Exception:
+                    # If not JSON, re-raise the original error
+                    raise exc
+            else:
+                raise exc
 
         high_vis = _build_high_vis_summary(response)
         conflict_actions: List[Dict[str, Any]] = []
         retried = False
+        all_messages = [item.get("message", "") for item in high_vis.get("messages") or []]
+        conflicts = _extract_layer_conflicts([str(item or "") for item in all_messages])
+
+        # Default policy is safe: fail on cross-company MetaFX layer conflicts unless user explicitly forces cleanup.
+        if conflicts and not auto_clear_layer_conflicts:
+            raise RuntimeError(
+                "Install reported MetaFX layer conflicts across companies and was stopped by default policy. "
+                "Re-run with --auto-clear-layer-conflicts to force tenant/cross-company layer cleanup and retry. "
+                f"Detected conflicts: {len(conflicts)}."
+            )
 
         if auto_clear_layer_conflicts:
-            all_messages = [item.get("message", "") for item in high_vis.get("messages") or []]
-            conflicts = _extract_layer_conflicts([str(item or "") for item in all_messages])
             for conflict in conflicts:
                 try:
                     action = self._delete_layer_conflict(
@@ -1054,6 +1094,19 @@ class KineticSolutionService(KineticBaseClient):
                     company=company,
                 )
                 high_vis = _build_high_vis_summary(response)
+
+                retry_messages = [item.get("message", "") for item in high_vis.get("messages") or []]
+                remaining_conflicts = _extract_layer_conflicts([str(item or "") for item in retry_messages])
+                if remaining_conflicts:
+                    raise RuntimeError(
+                        "Install retry still reports MetaFX layer conflicts after forced cleanup. "
+                        f"Remaining conflicts: {len(remaining_conflicts)}."
+                    )
+            elif conflicts:
+                raise RuntimeError(
+                    "Install reported MetaFX layer conflicts, but no eligible tenant/cross-company layers were deleted. "
+                    "Resolve manually in Solution Workbench or MetaFX and retry install."
+                )
 
         return {
             "cab_file": cab_file,
@@ -1121,6 +1174,73 @@ class KineticSolutionService(KineticBaseClient):
             "table_names": table_names,
         }
 
+    def _hydrate_solution_membership_from_backup(
+        self,
+        source_tableset: Dict[str, Any],
+        source_dynamic: Dict[str, Any],
+        source_tracked: Dict[str, Any],
+        metadata: Dict[str, Any],
+        source_solution_id: str,
+        final_solution_id: str,
+        company: str = "",
+        hydrate_tables: Optional[List[str]] = None,
+    ) -> Tuple[List[str], Dict[str, str]]:
+        hydrated_tables: List[str] = []
+        hydrate_errors: Dict[str, str] = {}
+
+        available_names = metadata.get("table_names") or _extract_solution_table_names(source_tableset)
+        requested = hydrate_tables or DEFAULT_HYDRATE_TABLES
+        selected_tables = _resolve_hydrate_tables(available_names, requested)
+
+        for table_name in selected_tables:
+            raw_payload = source_dynamic.get(table_name) or source_tracked.get(table_name)
+            if not raw_payload:
+                continue
+            ds_obj = _extract_dynamic_rows_payload(raw_payload)
+            if not ds_obj:
+                continue
+            ds_to_add = _sanitize_dynamic_payload_for_add(ds_obj, source_solution_id, final_solution_id)
+            if not ds_to_add:
+                continue
+            try:
+                self.add_items_to_solution_and_save(
+                    final_solution_id,
+                    ds_to_add=ds_to_add,
+                    records_to_delete={"ELEMENT": []},
+                    company=company,
+                )
+                hydrated_tables.append(table_name)
+            except Exception as exc:
+                hydrate_errors[table_name] = str(exc)
+
+        # Preferred hydration path mirrors Solution Workbench UI behavior.
+        try:
+            selected_rows = self._build_selected_solution_rows_from_dynamic(source_dynamic, company=company)
+            if selected_rows:
+                populate = self._call(
+                    "PopulateItemsWithDependencies",
+                    {"ds": {"SelectedSolutionElementList": selected_rows}},
+                    company=company,
+                )
+                returned_rows = populate.get("returnObj") or []
+                if isinstance(returned_rows, dict):
+                    ds_to_add = {"ELEMENT": returned_rows.get("ELEMENT") or []}
+                elif isinstance(returned_rows, list):
+                    ds_to_add = {"ELEMENT": returned_rows}
+                else:
+                    ds_to_add = {"ELEMENT": []}
+                if ds_to_add.get("ELEMENT"):
+                    self.add_items_to_solution_and_save(
+                        final_solution_id,
+                        ds_to_add=ds_to_add,
+                        records_to_delete={"ELEMENT": []},
+                        company=company,
+                    )
+        except Exception as exc:
+            hydrate_errors["ui_rebind"] = str(exc)
+
+        return sorted(set(hydrated_tables)), hydrate_errors
+
     def recreate_solution_from_backup(
         self,
         backup_path: str,
@@ -1160,71 +1280,76 @@ class KineticSolutionService(KineticBaseClient):
 
         hydrated_tables: List[str] = []
         hydrate_errors: Dict[str, str] = {}
+        auto_hydrate_attempted = False
 
         if hydrate_items:
-            available_names = metadata.get("table_names") or _extract_solution_table_names(source_tableset)
-            requested = hydrate_tables or DEFAULT_HYDRATE_TABLES
-            selected_tables = _resolve_hydrate_tables(available_names, requested)
-
-            for table_name in selected_tables:
-                raw_payload = source_dynamic.get(table_name) or source_tracked.get(table_name)
-                if not raw_payload:
-                    continue
-                ds_obj = _extract_dynamic_rows_payload(raw_payload)
-                if not ds_obj:
-                    continue
-                ds_to_add = _sanitize_dynamic_payload_for_add(ds_obj, source_solution_id, final_solution_id)
-                if not ds_to_add:
-                    continue
-                try:
-                    self.add_items_to_solution_and_save(
-                        final_solution_id,
-                        ds_to_add=ds_to_add,
-                        records_to_delete={"ELEMENT": []},
-                        company=company,
-                    )
-                    hydrated_tables.append(table_name)
-                except Exception as exc:
-                    hydrate_errors[table_name] = str(exc)
-
-            # Preferred hydration path mirrors Solution Workbench UI behavior.
-            try:
-                selected_rows = self._build_selected_solution_rows_from_dynamic(source_dynamic, company=company)
-                if selected_rows:
-                    populate = self._call(
-                        "PopulateItemsWithDependencies",
-                        {"ds": {"SelectedSolutionElementList": selected_rows}},
-                        company=company,
-                    )
-                    returned_rows = populate.get("returnObj") or []
-                    if isinstance(returned_rows, dict):
-                        ds_to_add = {"ELEMENT": returned_rows.get("ELEMENT") or []}
-                    elif isinstance(returned_rows, list):
-                        ds_to_add = {"ELEMENT": returned_rows}
-                    else:
-                        ds_to_add = {"ELEMENT": []}
-                    if ds_to_add.get("ELEMENT"):
-                        self.add_items_to_solution_and_save(
-                            final_solution_id,
-                            ds_to_add=ds_to_add,
-                            records_to_delete={"ELEMENT": []},
-                            company=company,
-                        )
-            except Exception as exc:
-                hydrate_errors["ui_rebind"] = str(exc)
+            hydrated_tables, hydrate_errors = self._hydrate_solution_membership_from_backup(
+                source_tableset=source_tableset,
+                source_dynamic=source_dynamic,
+                source_tracked=source_tracked,
+                metadata=metadata,
+                source_solution_id=source_solution_id,
+                final_solution_id=final_solution_id,
+                company=company,
+                hydrate_tables=hydrate_tables,
+            )
 
         target_tableset = (self.get_solution(final_solution_id, company=company).get("returnObj") or {})
         target_membership = _count_solution_membership_rows(target_tableset)
+        source_signature = _solution_registration_signature(source_tableset)
+        target_signature = _solution_registration_signature(target_tableset)
+
+        source_has_members = source_membership["detail"] > 0 or source_membership["package"] > 0
+        target_has_no_members = target_membership["detail"] == 0 and target_membership["package"] == 0
+
+        # Codified fallback: attempt hydration automatically when recreate leaves membership empty.
+        if source_has_members and target_has_no_members and not hydrate_items:
+            auto_hydrate_attempted = True
+            auto_tables, auto_errors = self._hydrate_solution_membership_from_backup(
+                source_tableset=source_tableset,
+                source_dynamic=source_dynamic,
+                source_tracked=source_tracked,
+                metadata=metadata,
+                source_solution_id=source_solution_id,
+                final_solution_id=final_solution_id,
+                company=company,
+                hydrate_tables=hydrate_tables,
+            )
+            hydrated_tables = sorted(set(hydrated_tables + auto_tables))
+            for key, value in auto_errors.items():
+                hydrate_errors[f"auto:{key}"] = value
+
+            target_tableset = (self.get_solution(final_solution_id, company=company).get("returnObj") or {})
+            target_membership = _count_solution_membership_rows(target_tableset)
+            target_signature = _solution_registration_signature(target_tableset)
+            target_has_no_members = target_membership["detail"] == 0 and target_membership["package"] == 0
 
         # Guardrail: some environments report recreate success but persist zero linked rows.
-        if (source_membership["detail"] > 0 or source_membership["package"] > 0) and (
-            target_membership["detail"] == 0 and target_membership["package"] == 0
-        ):
+        if source_has_members and target_has_no_members:
+            guidance = (
+                "Automatic hydration was attempted but no linked items persisted. "
+                if auto_hydrate_attempted or hydrate_items
+                else ""
+            )
             raise RuntimeError(
                 "Recreate completed but target solution has no linked items "
                 f"(detail={target_membership['detail']}, package={target_membership['package']}). "
+                f"{guidance}"
                 "This environment may require adding elements through Solution Workbench UI "
                 "(Add To Solution) to resolve target GUID bindings before build/install."
+            )
+
+        # Validation gate: target must logically match source registration intent.
+        detail_matches = source_signature["detail"] == target_signature["detail"]
+        package_matches = source_signature["package"] == target_signature["package"]
+        if source_has_members and (not detail_matches or not package_matches):
+            detail_diff = _diff_signatures(source_signature["detail"], target_signature["detail"])
+            package_diff = _diff_signatures(source_signature["package"], target_signature["package"])
+            raise RuntimeError(
+                "Recreate completed but target registration does not match source intent. "
+                f"detail_matches={detail_matches}, package_matches={package_matches}, "
+                f"detail_missing={len(detail_diff['missing_in_target'])}, detail_extra={len(detail_diff['extra_in_target'])}, "
+                f"package_missing={len(package_diff['missing_in_target'])}, package_extra={len(package_diff['extra_in_target'])}."
             )
 
         return {
@@ -1237,6 +1362,8 @@ class KineticSolutionService(KineticBaseClient):
             "tables_saved": sorted([key for key, value in base_ds.items() if isinstance(value, list) and value]),
             "hydrated_tables": sorted(hydrated_tables),
             "hydrate_errors": hydrate_errors,
+            "auto_hydrate_attempted": auto_hydrate_attempted,
+            "target_matches_source_signature": bool(detail_matches and package_matches),
             "saved_tableset": saved_ds,
         }
 
@@ -1331,6 +1458,19 @@ def main() -> None:
         action="store_true",
         help="If install reports MetaUI layer exists-in-another-company conflicts, delete tenant/cross-company layer and retry once.",
     )
+
+    remove_parser = subparsers.add_parser(
+        "remove",
+        aliases=["delete"],
+        help="Remove a solution definition and its membership rows",
+    )
+    remove_parser.add_argument("solution_id")
+    remove_parser.add_argument(
+        "--require-exists",
+        action="store_true",
+        help="Fail if the solution does not exist instead of treating as no-op.",
+    )
+
     KineticBaseClient.add_file_resolution_args(parser)
 
     args = parser.parse_args()
@@ -1409,6 +1549,15 @@ def main() -> None:
             for item in warnings:
                 print(f"[WARNING] {item.get('message', '')}", file=sys.stderr)
             print("=" * 80, file=sys.stderr)
+        return
+
+    if args.command in {"remove", "delete"}:
+        result = service.remove_solution(
+            args.solution_id,
+            company=args.company,
+            require_exists=args.require_exists,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
     parser.print_help()

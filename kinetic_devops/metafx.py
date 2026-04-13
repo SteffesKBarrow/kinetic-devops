@@ -41,10 +41,78 @@ class KineticMetafetcher(KineticBaseClient):
     def __init__(self, env_nickname: Optional[str] = None, user_id: Optional[str] = None, company_id: Optional[str] = None):
         super().__init__(env_nickname=env_nickname, user_id=user_id, company_id=company_id, debug=False)
 
+    def _service_url(self, method_name: str, company: str = "") -> str:
+        target_co = company or self.config["company"]
+        return f"{self.config['url'].rstrip('/')}/api/v2/odata/{target_co}/Ice.Lib.MetaFXSvc/{method_name}"
+
+    def call_service(self, method_name: str, payload: Optional[Dict[str, Any]] = None, company: str = "") -> Dict[str, Any]:
+        return self.execute_request("POST", self._service_url(method_name, company=company), payload=payload or {})
+
+    def get_layers(
+        self,
+        view_id: str,
+        type_code: str,
+        device_type: str = "Desktop",
+        include_unpublished_layers: bool = True,
+        company: str = "",
+    ) -> List[Dict[str, Any]]:
+        response = self.call_service(
+            "GetLayers",
+            {
+                "request": {
+                    "ViewId": view_id,
+                    "TypeCode": type_code,
+                    "DeviceType": device_type,
+                    "IncludeUnpublishedLayers": bool(include_unpublished_layers),
+                }
+            },
+            company=company,
+        )
+        rows = response.get("returnObj") or []
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+        return []
+
+    def bulk_delete_layers(self, layers_to_delete: List[Dict[str, Any]], company: str = "") -> Dict[str, Any]:
+        payload_rows: List[Dict[str, Any]] = []
+        for layer in layers_to_delete:
+            payload_rows.append(
+                {
+                    "Id": layer.get("Id"),
+                    "SubType": layer.get("SubType"),
+                    "LastUpdated": layer.get("LastUpdated"),
+                    "IsPublished": bool(layer.get("IsPublished", False)),
+                    "IsSilentExport": bool(layer.get("IsSilentExport", False)),
+                    "ViewId": layer.get("ViewId"),
+                    "TypeCode": layer.get("TypeCode"),
+                    "Company": layer.get("Company"),
+                    "LayerName": layer.get("LayerName"),
+                    "DeviceType": layer.get("DeviceType") or "Desktop",
+                    "CGCCode": layer.get("CGCCode") or "",
+                    "SystemFlag": bool(layer.get("SystemFlag", False)),
+                    "HasDraftContent": bool(layer.get("HasDraftContent", False)),
+                    "LastUpdatedBy": layer.get("LastUpdatedBy"),
+                }
+            )
+        return self.call_service("BulkDeleteLayers", {"layersToDelete": payload_rows}, company=company)
+
+    def delete_layer(self, layer_row: Dict[str, Any], company: str = "") -> Dict[str, Any]:
+        request = {
+            "ViewId": layer_row.get("ViewId"),
+            "Company": layer_row.get("Company"),
+            "TypeCode": layer_row.get("TypeCode"),
+            "LayerName": layer_row.get("LayerName"),
+            "DeviceType": layer_row.get("DeviceType") or "Desktop",
+            "CGCCode": layer_row.get("CGCCode") or "",
+            "UserName": self.config.get("user_id") or "",
+            "IncludeDraftContent": bool(layer_row.get("HasDraftContent", True)),
+            "UxAppVersion": 0,
+        }
+        return self.call_service("DeleteLayer", {"request": request}, company=company)
+
     def fetch_ui_metadata(self, app_id: str, menu_id: str):
         """Fetches UI Metadata via Ice.LIB.MetaFXSvc/GetApp."""
         base_url = self.config['url'].rstrip('/')
-        service = "Ice.LIB.MetaFXSvc"
         
         # Construct the specialized MetaFX request object
         request_obj = {
@@ -59,31 +127,25 @@ class KineticMetafetcher(KineticBaseClient):
             }
         }
         
-        # Stringify and URL-encode the request parameter
-        request_json = json.dumps(request_obj)
-        url = f"{base_url}/api/v2/odata/{self.config['company']}/{service}/GetApp?request={quote(request_json)}"
+        url = f"{base_url}/api/v2/odata/{self.config['company']}/Ice.LIB.MetaFXSvc/GetApp"
+        params = {"request": json.dumps(request_obj)}
         
-        headers = self.mgr.get_auth_headers(self.config)
-        # MetaFX often requires these specific serialization headers found in your UX trace
-        headers.update({
-            "x-epi-extension-serialization": "full-metadata",
-            "Accept": "application/json"
-        })
+        # MetaFX often requires this specific serialization header found in UX traces
+        extra_headers = {
+            "x-epi-extension-serialization": "full-metadata"
+        }
 
         print(f"\n--- Requesting MetaFX UI Layout ---")
         print(f"App ID: {app_id}")
         
         try:
-            response = requests.get(url, headers=headers, timeout=30)
-            
-            if response.status_code != 200:
-                print(f"❌ Error {response.status_code}: {response.text}")
-                return
+            # Leverage base client for logging, session touching, and auth
+            data = self.execute_request("GET", url, params=params, extra_headers=extra_headers)
 
             filename = f"ui_{app_id}_{menu_id}.json"
             filename = self.resolve_output_path(filename, conflict_resolution="timestamp")
             with open(filename, "w", encoding="utf-8") as f:
-                json.dump(response.json(), f, indent=4)
+                json.dump(data, f, indent=4)
                 
             print(f"✅ UI Metadata saved to: {filename}")
 
@@ -269,7 +331,20 @@ class KineticMetafetcher(KineticBaseClient):
             print(f"[{idx}/{len(candidates)}] {call['operation'].upper()} {final_url}")
 
             try:
-                resp = requests.request(method=method, url=final_url, headers=headers, json=body, timeout=timeout)
+                # Execute request directly to maintain access to status/headers for the report
+                resp = requests.request(
+                    method=method, 
+                    url=final_url, 
+                    headers=headers, 
+                    json=body, 
+                    timeout=timeout
+                )
+                
+                # Standardized wire logging for observability and session management
+                self.log_wire(method, final_url, headers, body=body, resp=resp)
+                if resp.ok:
+                    self.mgr.touch_from_headers(resp.request.headers)
+
                 ok = 200 <= resp.status_code < 300
                 item.update(
                     {
