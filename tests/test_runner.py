@@ -155,8 +155,8 @@ def run_tests(validate_only: bool = False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Kinetic SDK Test Runner")
     parser.add_argument(
-        "--validate", 
-        action="store_true", 
+        "--validate",
+        action="store_true",
         help="Run environment validation only"
     )
     args = parser.parse_args()

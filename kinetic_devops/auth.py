@@ -1141,7 +1141,7 @@ class KineticConfigManager(KineticCore):
             # 2. Redact Header info
             api_key = cfg.get("api_key", "")
             redacted_key = f"{api_key[:4]}..." if len(api_key) > 4 else "****"
-            
+
             print(f"Nickname: {name}")
             print(f"  API Key:   {redacted_key}")
             print(f"  Companies: {', '.join(co_list) if co_list else '<none>'}")
@@ -1153,14 +1153,14 @@ class KineticConfigManager(KineticCore):
             for u in sessions:
                 slot = self._get_token_key(name, u, api_key)
                 meta = self._get_token_meta(slot)
-                
+
                 if meta:
                     status = "✅ ACTIVE" if meta.get("_is_valid") else "❌ EXPIRED"
                     rem = meta.get("_remaining", 0)
                     co = meta.get("current_company", "<none>")
                     # Find which COx it is
                     redacted_co = next((k for k, v in co_map.items() if v.upper() == str(co).upper()), "UNK")
-                    
+
                     print(f"    - User: {self.redact_value(meta.get('user_id') or u):<15} | {status} | {str(timedelta(seconds=rem)):<12} | Co: {redacted_co}")
                 else:
                     print(f"    - User: {self.redact_value(u):<15} | ⚠️  NO TOKEN")
@@ -1189,7 +1189,7 @@ class KineticConfigManager(KineticCore):
         Keyring doesn't support prefix listing, so we check common patterns.
         """
         print("\n🔍 SCANNING FOR ORPHANED TOKENS (Heuristic)\n")
-        
+
         servers = self._get_server_dict()
         common_users = ["admin", "manager", "api", "svc", "service", "test", "user", "epicor", "kinetic"]
         orphans_found = []
@@ -1197,11 +1197,11 @@ class KineticConfigManager(KineticCore):
         for name, cfg in servers.items():
             api_key = cfg.get('api_key', '')
             sessions = [s.lower() for s in cfg.get('sessions', [])]
-            
+
             for user in common_users:
                 if user in sessions:
                     continue
-                
+
                 slot = self._get_token_key(name, user, api_key)
                 raw = keyring.get_password(slot, "current_token")
                 if raw:
@@ -1374,10 +1374,10 @@ def main():
     subparsers.add_parser("full-wipe")
     subparsers.add_parser("dump")
     subparsers.add_parser("diagnose")
-    
+
     orphan_p = subparsers.add_parser("find-orphans", help="Scan for tokens not associated with any config")
     orphan_p.add_argument("--delete", action="store_true", help="Purge found orphans")
-    
+
     sync_p = subparsers.add_parser("sync-companies")
     sync_p.add_argument("env")
 

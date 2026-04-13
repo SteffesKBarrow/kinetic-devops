@@ -333,13 +333,13 @@ class KineticMetafetcher(KineticBaseClient):
             try:
                 # Execute request directly to maintain access to status/headers for the report
                 resp = requests.request(
-                    method=method, 
-                    url=final_url, 
-                    headers=headers, 
-                    json=body, 
+                    method=method,
+                    url=final_url,
+                    headers=headers,
+                    json=body,
                     timeout=timeout
                 )
-                
+
                 # Standardized wire logging for observability and session management
                 self.log_wire(method, final_url, headers, body=body, resp=resp)
                 if resp.ok:
