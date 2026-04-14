@@ -4,12 +4,14 @@ tests/test_runner.py - Unified test runner for Kinetic SDK test suite
 
 Usage:
     python -m tests.test_runner
+    python -m tests.test_runner --validate
     python tests/test_runner.py
 """
 import sys
 import os
 import unittest
 import logging
+import argparse
 from pathlib import Path
 
 
@@ -110,11 +112,14 @@ def validate_environment():
     return not bool(errors)
 
 
-def run_tests():
+def run_tests(validate_only: bool = False):
     """Discover and run tests under `tests/` and log results."""
     if not validate_environment():
         logger.error("[FATAL] Environment validation failed. Aborting tests.")
         return 1
+
+    if validate_only:
+        return 0
 
     logger.info("=" * 70)
     logger.info("KINETIC SDK TEST SUITE")
@@ -148,4 +153,11 @@ def run_tests():
 
 
 if __name__ == '__main__':
-    sys.exit(run_tests())
+    parser = argparse.ArgumentParser(description="Kinetic SDK Test Runner")
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run environment validation only"
+    )
+    args = parser.parse_args()
+    sys.exit(run_tests(validate_only=args.validate))

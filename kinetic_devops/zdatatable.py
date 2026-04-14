@@ -119,6 +119,17 @@ class KineticZDataTableService(KineticBaseClient):
         )
         return response.get("returnObj") or {}
 
+    def exists_ud_table(self, system_code: str, table_id: str, company: str = "") -> bool:
+        try:
+            ds = self.get_by_id_ud(system_code, table_id, company=company)
+        except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in (400, 404):
+                return False
+            raise
+        rows = ds.get("ZDataTable") or []
+        return bool(rows)
+
     def get_extended_sync_details(self, schema_name: str, table_name: str, company: str = "") -> Dict[str, Any]:
         response = self._call(
             "GetExtendedTableSyncDetailsMessage",

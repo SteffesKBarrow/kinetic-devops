@@ -26,6 +26,11 @@ import subprocess
 import json
 import re
 import os
+
+# Ensure UTF-8 encoding for Windows terminals to support emojis
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from pathlib import Path
 
 
@@ -180,7 +185,7 @@ def ensure_public_email_privacy() -> int:
 def run_tests(repo_root):
     """Run all pre-commit checks."""
     print("=" * 70)
-    print("🔍 PRE-COMMIT: Running test suite...")
+    print("  PRE-COMMIT: Running test suite...")
     print("=" * 70)
     
     # Run tests via the installed CLI entry point
@@ -192,12 +197,12 @@ def run_tests(repo_root):
     
     if result.returncode == 0:
         print("\n" + "=" * 70)
-        print("PRE-COMMIT: All tests passed. Commit allowed.")
+        print("✅ PRE-COMMIT: All tests passed. Commit allowed.")
         print("=" * 70)
         return 0
     else:
         print("\n" + "=" * 70)
-        print("PRE-COMMIT: Tests failed. Commit blocked.")
+        print("❌ PRE-COMMIT: Tests failed. Commit blocked.")
         print("=" * 70)
         return 1
 
