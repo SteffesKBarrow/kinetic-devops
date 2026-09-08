@@ -118,7 +118,7 @@ def update_company(env_nickname: str, company: str) -> bool:
             log_debug(f"Updating {len(dms_records)} DMS storage type(s) for {company}")
             dms_ok = file_service.update_dms_storage_types(company, dms_records)
         
-        # Operation 2: Clear tax configurations
+        # Operation 2: Clear tax configurations in-place (non-destructive)
         log_debug(f"Fetching tax configurations for {company}")
         tax_records = tax_service.get_tax_configs(company)
         
@@ -129,8 +129,8 @@ def update_company(env_nickname: str, company: str) -> bool:
             log_info(f"No tax configs to clear for {company}")
             tax_ok = True
         else:
-            log_debug(f"Clearing {len(tax_records)} tax config(s) for {company}")
-            tax_ok = tax_service.delete_configs(company, tax_records)
+            log_debug(f"Updating {len(tax_records)} tax config(s) in-place for {company}")
+            tax_ok = tax_service.update_configs(company, tax_records)
         
         if dms_ok and tax_ok:
             log_info(f"✅ Successfully updated {company}")

@@ -98,7 +98,7 @@ def clear_company_tax_configs(env_nickname: str, company: str, inactive_only: bo
             log_error(f"Missing required config fields for {env_nickname}")
             return False
         
-        log_info(f"Clearing tax configs for {env_nickname}/{company} (inactive_only={inactive_only})")
+        log_info(f"Clearing tax configs in-place for {env_nickname}/{company} (inactive_only={inactive_only})")
         
         # Use TaxService to handle operations
         tax_service = TaxService(url, token, api_key, debug=False)
@@ -108,7 +108,7 @@ def clear_company_tax_configs(env_nickname: str, company: str, inactive_only: bo
             records = tax_service.get_inactive_configs(company)
             if records is not None:
                 log_info(f"Found {len(records)} inactive tax config(s) for {company}")
-                success = tax_service.delete_configs(company, records)
+                success = tax_service.update_configs(company, records)
             else:
                 log_error(f"Failed to fetch inactive configs for {company}")
                 success = False

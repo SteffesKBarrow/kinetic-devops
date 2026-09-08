@@ -671,11 +671,16 @@ def _run_no_commit_review(args: argparse.Namespace) -> int:
         "candidates": candidate_matrix,
     }
 
-    Path(args.json_out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    Path(args.md_out).write_text(_render_markdown(summary), encoding="utf-8")
+    json_out = Path(args.json_out)
+    md_out = Path(args.md_out)
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    md_out.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"JSON_REPORT={args.json_out}")
-    print(f"MD_REPORT={args.md_out}")
+    json_out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    md_out.write_text(_render_markdown(summary), encoding="utf-8")
+
+    print(f"JSON_REPORT={json_out}")
+    print(f"MD_REPORT={md_out}")
     print(f"REPORT_COUNT={len(reports)}")
     print(f"CANDIDATE_COUNT={len(candidate_matrix)}")
     print(f"ACTIVE_ROOT_REGRESSION_RISK={active_regression['risk']}")
@@ -840,6 +845,206 @@ def _run_legacy_intake(args: argparse.Namespace) -> int:
     return 0
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _verify_commit_item(repo: Path, item: dict[str, Any]) -> dict[str, Any]:
+    sha = str(item.get("sha") or item.get("id") or "").strip()
+    result: dict[str, Any] = {
+        "id": item.get("id"),
+        "type": item.get("type"),
+        "sha": sha,
+        "ok": True,
+        "errors": [],
+        "warnings": [],
+    }
+
+    if not sha:
+        result["ok"] = False
+        result["errors"].append("missing commit sha")
+        return result
+
+    exists = run_git(repo, ["cat-file", "-e", f"{sha}^{{commit}}"], timeout=20)
+    if exists.code != 0:
+        result["ok"] = False
+        result["errors"].append("commit no longer reachable in local object database")
+        return result
+
+    subject_cmd = run_git(repo, ["show", "--no-patch", "--format=%s", sha], timeout=30)
+    paths_cmd = run_git(repo, ["show", "--name-only", "--pretty=format:", sha], timeout=60)
+
+    subject_actual = subject_cmd.out.strip()
+    subject_recorded = str(item.get("subject", "")).strip()
+    if subject_actual != subject_recorded:
+        result["ok"] = False
+        result["errors"].append(
+            f"subject mismatch recorded='{subject_recorded}' actual='{subject_actual}'"
+        )
+
+    actual_paths: list[str] = []
+    for line in paths_cmd.out.splitlines():
+        p = line.strip()
+        if p and p not in actual_paths:
+            actual_paths.append(p)
+
+    recorded_paths = [str(p) for p in item.get("paths", []) if str(p).strip()]
+    if sorted(actual_paths) != sorted(recorded_paths):
+        result["ok"] = False
+        result["errors"].append("path set mismatch between recorded report and git")
+
+    expected_risk = risk_from_paths(recorded_paths)
+    if str(item.get("risk_hint", "")).strip() != expected_risk:
+        result["ok"] = False
+        result["errors"].append("risk_hint mismatch with deterministic path heuristic")
+
+    expected_rogue = is_rogue_commit(subject_recorded, recorded_paths)
+    if _truthy(item.get("rogue_candidate")) != expected_rogue:
+        result["ok"] = False
+        result["errors"].append("rogue_candidate mismatch with deterministic rule")
+
+    return result
+
+
+def _verify_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
+    paths = [str(p) for p in item.get("paths", []) if str(p).strip()]
+    expected_risk = risk_from_paths(paths)
+    recorded_risk = str(item.get("risk_hint", "")).strip()
+
+    result: dict[str, Any] = {
+        "id": item.get("id"),
+        "type": item.get("type"),
+        "ok": True,
+        "errors": [],
+        "warnings": [],
+    }
+
+    if recorded_risk != expected_risk:
+        result["ok"] = False
+        result["errors"].append("snapshot risk_hint mismatch with deterministic path heuristic")
+
+    payload = str(item.get("payload", "")).strip()
+    if not payload:
+        result["ok"] = False
+        result["errors"].append("snapshot payload missing")
+
+    return result
+
+
+def _render_verify_markdown(report: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Verify Report")
+    lines.append("")
+    lines.append(f"- Source Run Report: {report['source_run_report']}")
+    lines.append(f"- Repository: {report['repo']}")
+    lines.append(f"- Checked Items: {report['checked_items']}")
+    lines.append(f"- Passed Items: {report['passed_items']}")
+    lines.append(f"- Failed Items: {report['failed_items']}")
+    lines.append(f"- Artifact Warnings: {report['artifact_warnings']}")
+    lines.append(f"- Strict Mode: {report['strict']}")
+    lines.append("")
+
+    lines.append("## Deterministic Findings")
+    failures = [r for r in report["item_results"] if not _truthy(r.get("ok"))]
+    if not failures:
+        lines.append("- All deterministic checks passed")
+    else:
+        for row in failures:
+            lines.append(f"- {row.get('type')} {row.get('id')}: FAIL")
+            for err in row.get("errors", []):
+                lines.append(f"  - {err}")
+
+    if report["artifact_missing"]:
+        lines.append("")
+        lines.append("## Artifact Warnings")
+        for path in report["artifact_missing"]:
+            lines.append(f"- Missing artifact path: {path}")
+
+    lines.append("")
+    lines.append("## Recommendation")
+    if report["failed_items"] == 0:
+        lines.append("- VERIFIED: deterministic checks match stored analysis metadata")
+    else:
+        lines.append("- REVIEW REQUIRED: deterministic mismatches found; do not treat AI output as trusted until reconciled")
+    return "\n".join(lines)
+
+
+def _run_verify_report(args: argparse.Namespace) -> int:
+    run_report_path = Path(args.run_report)
+    run_report = _load_json(run_report_path)
+    if not isinstance(run_report, dict):
+        raise ValueError(f"Could not parse run report JSON: {run_report_path}")
+
+    repo = Path(args.repo)
+    items = run_report.get("items")
+    if not isinstance(items, list):
+        raise ValueError("Invalid run report format: items[] missing")
+
+    item_results: list[dict[str, Any]] = []
+    artifact_missing: list[str] = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = str(item.get("type", "")).strip()
+        if item_type == "commit":
+            result = _verify_commit_item(repo, item)
+        elif item_type == "snapshot":
+            result = _verify_snapshot_item(item)
+        else:
+            result = {
+                "id": item.get("id"),
+                "type": item_type or "unknown",
+                "ok": False,
+                "errors": ["unsupported item type"],
+                "warnings": [],
+            }
+
+        for artifact_key in ("output_json", "output_md"):
+            artifact_path = str(item.get(artifact_key, "")).strip()
+            if artifact_path and not Path(artifact_path).exists():
+                artifact_missing.append(artifact_path)
+
+        item_results.append(result)
+
+    failed_items = sum(1 for r in item_results if not _truthy(r.get("ok")))
+    passed_items = len(item_results) - failed_items
+
+    verify_report = {
+        "source_run_report": str(run_report_path),
+        "repo": str(repo),
+        "checked_items": len(item_results),
+        "passed_items": passed_items,
+        "failed_items": failed_items,
+        "artifact_warnings": len(artifact_missing),
+        "artifact_missing": artifact_missing,
+        "strict": bool(args.strict),
+        "item_results": item_results,
+    }
+
+    out_json = Path(args.json_out)
+    out_md = Path(args.md_out)
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+    out_json.write_text(json.dumps(verify_report, indent=2), encoding="utf-8")
+    out_md.write_text(_render_verify_markdown(verify_report), encoding="utf-8")
+
+    print(f"VERIFY_JSON={out_json}")
+    print(f"VERIFY_MD={out_md}")
+    print(f"CHECKED_ITEMS={len(item_results)}")
+    print(f"FAILED_ITEMS={failed_items}")
+    print(f"ARTIFACT_WARNINGS={len(artifact_missing)}")
+
+    if args.strict and failed_items > 0:
+        return 1
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     active_root_default = _default_active_root()
     parser = argparse.ArgumentParser(description="Analysis workflows (local AI + deterministic metadata checks)")
@@ -873,6 +1078,22 @@ def _build_parser() -> argparse.ArgumentParser:
     legacy.add_argument("--ai-base-url", default="")
     legacy.add_argument("--ai-timeout", type=int, default=int(_env("KINETIC_AI_TIMEOUT", "45")))
     legacy.add_argument("--out-dir", default=_env("KINETIC_ANALYSIS_LEGACY_OUT_DIR", _default_temp_path("legacy_intake_reviews")))
+
+    verify = subparsers.add_parser("verify-report", help="Deterministically verify a prior analysis run report")
+    verify.add_argument("--repo", default=active_root_default)
+    verify.add_argument(
+        "--run-report",
+        default=_env("KINETIC_ANALYSIS_VERIFY_SOURCE", _default_temp_path("snapshot_commit_ai/run_report.json")),
+    )
+    verify.add_argument(
+        "--json-out",
+        default=_env("KINETIC_ANALYSIS_VERIFY_JSON", _default_temp_path("snapshot_commit_ai/verify_report.json")),
+    )
+    verify.add_argument(
+        "--md-out",
+        default=_env("KINETIC_ANALYSIS_VERIFY_MD", _default_temp_path("snapshot_commit_ai/verify_report.md")),
+    )
+    verify.add_argument("--strict", action="store_true", help="Exit with code 1 when deterministic checks fail")
     return parser
 
 
@@ -887,6 +1108,8 @@ def main() -> None:
             raise SystemExit(_run_no_commit_review(args))
         if args.analysis_command == "legacy-intake":
             raise SystemExit(_run_legacy_intake(args))
+        if args.analysis_command == "verify-report":
+            raise SystemExit(_run_verify_report(args))
     except ValueError as exc:
         print(f"Error: {exc}")
         raise SystemExit(2)

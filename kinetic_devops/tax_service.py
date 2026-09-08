@@ -6,11 +6,12 @@ TaxService - Manage Epicor Kinetic tax configurations.
 Provides high-level methods to:
 - Fetch tax service configurations
 - Update tax configurations
-- Clear/delete tax records
+- Clear tax records in-place (no delete)
 - List inactive tax configurations
 """
 
 import json
+import warnings
 from typing import List, Dict, Any, Optional
 import requests
 
@@ -23,7 +24,7 @@ class TaxService(KineticCore):
     
     Responsibilities:
     - Fetch and parse tax service configurations
-    - Build and execute UpdateExt calls for deletions/updates
+    - Build and execute UpdateExt calls for in-place updates
     - Handle company-scoped operations
     """
     
@@ -107,19 +108,24 @@ class TaxService(KineticCore):
         
         return inactive
     
-    def delete_configs(
+    def update_configs(
         self, 
         company: str, 
         records: List[Dict[str, Any]],
+        clear_values: Optional[Dict[str, Any]] = None,
         continue_on_error: bool = True,
         rollback_on_child_error: bool = True
     ) -> bool:
         """
-        Delete tax configuration records via UpdateExt.
+        Update tax configuration records via UpdateExt.
+        
+        This method intentionally uses in-place updates (RowMod="U") so
+        tax records are retained and cleared/disabled rather than deleted.
         
         Args:
             company: Company ID
-            records: List of records to delete (will set RowMod="D" for each)
+            records: List of records to update (will set RowMod="U" for each)
+            clear_values: Optional override values to apply while clearing
             continue_on_error: Continue processing if errors occur
             rollback_on_child_error: Rollback parent on child errors
         
@@ -127,15 +133,26 @@ class TaxService(KineticCore):
             True if successful, False otherwise
         """
         if not records:
-            self.debug_log(f"No records to delete for {company}")
+            self.debug_log(f"No records to update for {company}")
             return True
         
         try:
-            # Mark all records for deletion
-            deletion_records = [
-                {**record, "RowMod": "D"}
-                for record in records
-            ]
+            # Preserve records and clear values in-place to avoid destructive deletes.
+            values = {
+                "TaxConnectEnabled": False,
+                "URL": "",
+                "Account": "",
+                "Key": "",
+            }
+            if clear_values:
+                values.update(clear_values)
+
+            update_records = []
+            for record in records:
+                updated = {**record, "RowMod": "U"}
+                for field, field_value in values.items():
+                    updated[field] = field_value
+                update_records.append(updated)
             
             url = f"{self.base_url}/api/v2/odata/{company}/Erp.BO.TaxSvcConfigSvc/UpdateExt"
             headers = self._build_headers(company)
@@ -143,7 +160,7 @@ class TaxService(KineticCore):
             
             payload = {
                 "ds": {
-                    "TaxSvcConfig": deletion_records
+                    "TaxSvcConfig": update_records
                 },
                 "continueProcessingOnError": continue_on_error,
                 "rollbackParentOnChildError": rollback_on_child_error
@@ -161,19 +178,50 @@ class TaxService(KineticCore):
                 self.debug_log(f"UpdateExt returned errors for {company}: {data}")
                 return False
             
-            self.debug_log(f"Successfully deleted {len(deletion_records)} record(s) for {company}")
+            self.debug_log(f"Successfully updated {len(update_records)} record(s) for {company}")
             return True
         
         except requests.exceptions.RequestException as e:
             self.debug_log(f"UpdateExt request failed for {company}: {e}")
             return False
         except Exception as e:
-            self.debug_log(f"Unexpected error in delete_configs: {e}")
+            self.debug_log(f"Unexpected error in update_configs: {e}")
             return False
+
+    def delete_configs(
+        self,
+        company: str,
+        records: List[Dict[str, Any]],
+        continue_on_error: bool = True,
+        rollback_on_child_error: bool = True
+    ) -> bool:
+        """Backward-compatible alias that now performs in-place updates.
+
+        Kept to avoid breaking external callers while retiring RowMod="D"
+        behavior from this SDK.
+
+        Warning:
+            Record deletion may break downstream tax modules. Use clear/update
+            behavior (RowMod="U" + empty values) when no config is available.
+        """
+        warning_msg = (
+            "delete_configs was requested. Deleting tax records may break tax "
+            "modules. Preferred behavior is clear-in-place updates with empty "
+            "values when no configuration is available."
+        )
+        warnings.warn(warning_msg, category=UserWarning, stacklevel=2)
+        self.debug_log(warning_msg)
+        self.debug_log("delete_configs is deprecated; applying in-place clear update instead.")
+        return self.update_configs(
+            company=company,
+            records=records,
+            continue_on_error=continue_on_error,
+            rollback_on_child_error=rollback_on_child_error,
+        )
     
     def clear_all_configs(self, company: str) -> bool:
         """
-        Fetch all tax configs and delete them.
+        Fetch all tax configs and clear them in-place.
         
         Args:
             company: Company ID
@@ -190,11 +238,11 @@ class TaxService(KineticCore):
             self.debug_log(f"No tax configs to clear for {company}")
             return True
         
-        return self.delete_configs(company, records)
+        return self.update_configs(company, records)
     
     def clear_inactive_configs(self, company: str) -> bool:
         """
-        Fetch inactive tax configs and delete them.
+        Fetch inactive tax configs and clear them in-place.
         
         Args:
             company: Company ID
@@ -211,4 +259,4 @@ class TaxService(KineticCore):
             self.debug_log(f"No inactive tax configs to clear for {company}")
             return True
         
-        return self.delete_configs(company, records)
+        return self.update_configs(company, records)
