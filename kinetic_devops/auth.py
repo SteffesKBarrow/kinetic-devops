@@ -347,17 +347,50 @@ class KineticConfigManager(KineticCore):
         try:
             response = None
             last_error = None
+            did_retry_refresh = False
+            slot = self._get_token_key(name, user_id, api_key)
 
             for api_url in ordered_urls:
                 response = requests.get(api_url, headers=headers, params=params, timeout=20)
-                self.log_wire("GET", api_url, headers, resp=response)
 
                 if response.status_code == 401 and "invalid api key" in (response.text or "").lower():
+                    self.log_wire("GET", api_url, headers, resp=response)
                     print(
                         "❌ Sync Error: Server rejected the API key for this environment/company. "
                         "Update the environment API key or its company scope, then retry."
                     )
                     return tuple(local_list)
+
+                if response.status_code == 401 and not did_retry_refresh:
+                    print(f"⚠️ Received 401 from {nickname or name}; attempting one token refresh and retry...")
+                    renew_ctx = {
+                        "url": base_url,
+                        "api_key": api_key,
+                        "user_id": user_id,
+                        "token_slot": slot,
+                        "nickname": name,
+                        "company": current_co,
+                    }
+
+                    existing_token = headers.get("Authorization", "").replace("Bearer ", "").strip()
+                    renewed = self._renew_token_from_existing(renew_ctx, existing_token) if existing_token else None
+                    if not renewed and not passive:
+                        renewed = self._fetch_token_kinetic(renew_ctx)
+
+                    if renewed:
+                        refreshed = self._get_token_meta(slot) or {}
+                        fresh_token = str(refreshed.get("AccessToken") or refreshed.get("access_token") or "").strip()
+                        if fresh_token:
+                            headers = self.get_auth_headers({
+                                "token": fresh_token,
+                                "api_key": api_key,
+                                "company": current_co,
+                            })
+                            headers["X-Company"] = str(current_co or "")
+                            response = requests.get(api_url, headers=headers, params=params, timeout=20)
+                    did_retry_refresh = True
+
+                self.log_wire("GET", api_url, headers, resp=response)
 
                 if response.ok:
                     break
