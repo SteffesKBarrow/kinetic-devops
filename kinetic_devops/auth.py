@@ -28,6 +28,7 @@ This file is intentionally lightweight and designed for both interactive develop
 
 import sys
 import json
+import base64
 import getpass
 import argparse
 import keyring
@@ -276,100 +277,142 @@ class KineticConfigManager(KineticCore):
                     meta['current_company'] = co_id
                     self.touch_session(slot, meta, nickname)
 
-    def sync_companies(self, env_name: str):
-        """
-        Syncs authorized companies using the Smart Context pattern.
-        """
-        # Use centralized logic to get config and build headers [cite: 166, 170]
-        cfg = self.get_active_config(env_name, fields=("url", "token", "api_key", "company"))
-        headers = self.build_headers(cfg[1], cfg[2], cfg[3]) # token, api_key, company
-        
-        response = requests.get(f"{cfg[0]}/...", headers=headers)
-        self.log_wire("GET", cfg[0], headers, resp=response) # <--- Centralized log!
-
-        # 1. Fetch exactly what we need for the API call
-        # We ask for 'company' (singular) to ensure the sync call uses a valid header context
-        url, token, api_key, current_co, user_id, nickname = self.get_active_config(
-            context, 
-            fields=("url", "token", "api_key", "company", "user_id", "nickname")
-        )
-
-        # Fallback for manual token overrides
-        active_token = provided_token or token
-
-        if not active_token or not url:
-            print(f"❌ Sync Failure: No valid session or URL for {context}")
+    def sync_companies(self, env_name: str, passive: bool = False):
+        """Sync authorized companies from server to local config for one environment."""
+        env_name = str(env_name or "").strip()
+        if not env_name:
+            print("❌ Sync Failure: env name is required")
             return tuple()
 
-        # 2. Safety Check: Verify token ownership vs target nickname
-        # Uses your get_session_by_bearer logic
-        env_match, actual_user = self.get_session_by_bearer(active_token, ("nickname", "user_id"))
-        if env_match and env_match.lower() != nickname.lower():
-            print(f"⚠️ Security Alert: Token belongs to {env_match}, but targeting {nickname}!")
+        servers = self._get_server_dict()
+        name, master_cfg = self._find_env(servers, env_name)
+        if not master_cfg:
+            print(f"❌ Sync Failure: unknown environment '{env_name}'")
+            return tuple()
 
-        # 3. Request logic - No more manual header/URL building
-        base_url = url.rstrip('/')
-        query = f"$filter=UserID eq '{user_id}'&$expand=UserComps($select=Company)"
-        # We use current_co which get_active_config guaranteed is a single ID (no commas!)
-        api_url = f"{base_url}/api/v2/odata/{current_co}/Ice.BO.UserFileSvc/UserFiles?{query}"
-        
-        headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'X-Epicor-Company': str(current_co),
-            'X-API-Key': str(api_key),
-            'Authorization': f'Bearer {active_token}'
+        local_list = sorted([c.strip() for c in str(master_cfg.get('companies', '')).split(',') if c.strip()])
+
+        url, token, api_key, current_co, user_id, nickname = self.get_active_config(
+            name,
+            fields=("url", "token", "api_key", "company", "user_id", "nickname"),
+        )
+
+        if not token or not url:
+            print(f"❌ Sync Failure: No valid session or URL for {name}")
+            return tuple(local_list)
+
+        env_match, actual_user = self.get_session_by_bearer(token, ("nickname", "user_id"))
+        if env_match and env_match.lower() != str(nickname or name).lower():
+            print(f"⚠️ Security Alert: Token belongs to {env_match}, but targeting {nickname or name}!")
+        if actual_user and user_id and str(actual_user).lower() != str(user_id).lower():
+            print(f"⚠️ Security Alert: Token user is {actual_user}, but targeting {user_id}!")
+
+        base_url = str(url).rstrip('/')
+        user_id_wc = str(user_id or "").replace("'", "''")
+        bo_path = "Erp.BO.UserFileSvc/GetRows"
+
+        candidate_urls = []
+        base_lower = base_url.lower()
+        if "/api/v2/" in base_lower:
+            candidate_urls.append(f"{base_url}/{bo_path}")
+            api_v2_root = base_url[:base_lower.index("/api/v2/") + len("/api/v2")]
+            candidate_urls.append(f"{api_v2_root}/{bo_path}")
+        else:
+            candidate_urls.append(f"{base_url}/api/v2/odata/{current_co}/{bo_path}")
+            candidate_urls.append(f"{base_url}/api/v2/{bo_path}")
+
+        ordered_urls = []
+        seen_urls = set()
+        for candidate_url in candidate_urls:
+            normalized_url = candidate_url.rstrip('/')
+            if normalized_url and normalized_url not in seen_urls:
+                ordered_urls.append(normalized_url)
+                seen_urls.add(normalized_url)
+
+        params = {
+            "whereClauseUserFile": f"DcdUserID = '{user_id_wc}'",
+            "whereClauseUserComp": f"DcdUserID = '{user_id_wc}'",
+            "whereClauseUserCompExt": "",
+            "pageSize": 50,
+            "absolutePage": 1,
         }
 
+        headers = self.get_auth_headers({
+            "token": token,
+            "api_key": api_key,
+            "company": current_co,
+        })
+        headers["X-Company"] = str(current_co or "")
+
         try:
-            response = requests.get(api_url, headers=headers, timeout=20)
-            # If the sync call itself hits a 400/403, we should see it in the wire log if debug is on
-            response.raise_for_status()
-            data = response.json()
-            
-            # 4. Extract and Compare
-            server_list = []
-            if data.get('value'):
-                comps = data['value'][0].get('UserComps', [])
-                server_list = sorted(list(set(c['Company'] for c in comps)))
+            response = None
+            last_error = None
 
-            # Get master list to compare
-            servers = self._get_server_dict()
-            name, master_cfg = self._find_env(servers, nickname)
-            local_list = sorted([c.strip() for c in master_cfg.get('companies', '').split(',') if c.strip()])
+            for api_url in ordered_urls:
+                response = requests.get(api_url, headers=headers, params=params, timeout=20)
+                self.log_wire("GET", api_url, headers, resp=response)
 
-            if server_list == local_list:
-                print(f"✅ Sync: {nickname} company list is up to date.")
+                if response.status_code == 401 and "invalid api key" in (response.text or "").lower():
+                    print(
+                        "❌ Sync Error: Server rejected the API key for this environment/company. "
+                        "Update the environment API key or its company scope, then retry."
+                    )
+                    return tuple(local_list)
+
+                if response.ok:
+                    break
+
+                last_error = f"{response.status_code} for {api_url}"
+
+            if not response or not response.ok:
+                if response is not None:
+                    response.raise_for_status()
+                raise RuntimeError(last_error or "no response from sync probe")
+
+            data = response.json() or {}
+            server_set = set()
+            return_obj = data.get("returnObj") if isinstance(data, dict) else {}
+            comps = return_obj.get("UserComp", []) if isinstance(return_obj, dict) else []
+            if isinstance(comps, list):
+                for item in comps:
+                    if not isinstance(item, dict):
+                        continue
+                    company = str(item.get("Company") or item.get("CompanyID") or "").strip()
+                    if company:
+                        server_set.add(company)
+
+            server_list = sorted(server_set)
+            if not server_list:
+                print(f"⚠️ Sync: server returned no companies for {nickname or name}; keeping local list.")
                 return tuple(local_list)
 
-            print(f"⚠️ Mismatch Detected for {nickname}!")
+            if server_list == local_list:
+                print(f"✅ Sync: {nickname or name} company list is up to date.")
+                return tuple(local_list)
+
+            print(f"⚠️ Mismatch detected for {nickname or name}!")
             print(f"   Server: {', '.join(server_list)}")
             print(f"   Local:  {', '.join(local_list)}")
 
             if passive:
                 return tuple(local_list)
 
-            # 5. Resolution Logic
             choice = input("\nUpdate company list? [Y]es (Overwrite) / [M]erge / [N]o: ").strip().lower()
-
-            if choice == 'y':
+            if choice in {"", "y", "yes"}:
                 final_list = server_list
-            elif choice == 'm':
+            elif choice in {"m", "merge"}:
                 final_list = sorted(list(set(local_list + server_list)))
             else:
                 return tuple(local_list)
 
-            # 6. Atomic Save
-            master_cfg['companies'] = ",".join(final_list)
+            master_cfg["companies"] = ",".join(final_list)
             keyring.set_password(SERVICE_SERVERS, "config", json.dumps(servers))
-            
-            print(f"✅ Updated list saved for {nickname}.")
+            print(f"✅ Updated list saved for {nickname or name}.")
             return tuple(final_list)
 
         except Exception as e:
             print(f"❌ Sync Error: {e}")
-            # Return whatever we have locally as a fallback
-            return tuple(local_list) if 'local_list' in locals() else tuple()
+            return tuple(local_list)
         
     def _print_env_var(self, key: str, value: str):
         """Print a shell command that sets an environment variable.
@@ -714,12 +757,24 @@ class KineticConfigManager(KineticCore):
 
         password = getpass.getpass(f"Password for {user_id}: ").strip()
         auth_url = f"{url.rstrip('/')}/TokenResource.svc/"
-        headers = {
-            'userName': user_id, 'password': password,
-            'x-api-key': api_key, 'Content-Type': 'application/json'
+        basic_auth = base64.b64encode(f"{user_id}:{password}".encode("utf-8")).decode("ascii")
+        primary_headers = {
+            'Authorization': f'Basic {basic_auth}',
+            'X-API-Key': api_key,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        }
+        legacy_headers = {
+            'userName': user_id,
+            'password': password,
+            'x-api-key': api_key,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
         }
         try:
-            resp = requests.post(auth_url, headers=headers, data='', timeout=15)
+            resp = requests.post(auth_url, headers=primary_headers, data='', timeout=15)
+            if resp.status_code in (400, 401, 403):
+                resp = requests.post(auth_url, headers=legacy_headers, data='', timeout=15)
             resp.raise_for_status()
             res = resp.json()
 
@@ -763,6 +818,20 @@ class KineticConfigManager(KineticCore):
                 # Best-effort only; if something goes wrong we'll leave current_company absent
                 pass
 
+            selected_company = str(res.get("current_company") or company or "").strip()
+            probe_ok, probe_reason = self._validate_bearer_access(
+                url=url,
+                api_key=api_key,
+                company=selected_company,
+                token=str(res.get('AccessToken') or res.get('access_token') or '').strip(),
+                user_id=user_id,
+            )
+            if not probe_ok:
+                sys.stderr.write(
+                    f"\n❌ Auth Failed for {user_id}: token minted but BO probe failed ({probe_reason}).\n"
+                )
+                return None
+
             # --- SAVE & REGISTER VIA CENTRALIZED BOTTLENECK ---
             # touch_session receives complete token data and handles all registration
             self.touch_session(token_slot, res, nickname)
@@ -783,6 +852,279 @@ class KineticConfigManager(KineticCore):
         new_servers = {k: {"url": v.get("url", ""), "companies": v.get("companies") or v.get("company") or "ACME", "display_name": k} for k, v in servers.items() if isinstance(v, dict)}
         keyring.set_password(SERVICE_SERVERS, "config", json.dumps(new_servers))
         print("✅ Migration complete.")
+
+    def set_api_key(self, env_name: str, value: str = ""):
+        """Replace only the API key for an existing environment."""
+        env_name = str(env_name or "").strip()
+        if not env_name:
+            print("❌ Environment name is required.")
+            return
+
+        servers = self._get_server_dict()
+        name, cfg = self._find_env(servers, env_name)
+        if not cfg:
+            print(f"❌ No environment named '{env_name}' found.")
+            return
+
+        new_key = str(value or "").strip()
+        if not new_key:
+            new_key = getpass.getpass(f"New API key for {name}: ").strip()
+        if not new_key:
+            print("❌ API key cannot be empty.")
+            return
+
+        old_key = str(cfg.get("api_key") or "").strip()
+        if old_key == new_key:
+            print(f"✅ API key for {name} is unchanged.")
+            return
+
+        deleted_slots = 0
+        sessions = cfg.get("sessions", []) or []
+        for user in sessions:
+            user_id = str(user or "").strip()
+            if not user_id:
+                continue
+            try:
+                old_slot = self._get_token_key(name, user_id, old_key)
+                keyring.delete_password(old_slot, "current_token")
+                deleted_slots += 1
+            except Exception:
+                pass
+
+        cfg["api_key"] = new_key
+        servers[name] = cfg
+        keyring.set_password(SERVICE_SERVERS, "config", json.dumps(servers))
+
+        try:
+            last_slot = keyring.get_password("KineticSDK", "LAST_GLOBAL_SESSION") or ""
+            if last_slot and any(last_slot == self._get_token_key(name, str(user), old_key) for user in sessions if str(user).strip()):
+                keyring.delete_password("KineticSDK", "LAST_GLOBAL_SESSION")
+        except Exception:
+            pass
+
+        print(f"✅ API key updated for {name}.")
+        if deleted_slots:
+            print(f"Removed {deleted_slots} cached token slot(s) for {name}; renew to create a fresh token.")
+
+    def _renew_token_from_existing(self, ctx: Dict, existing_token: str) -> Optional[str]:
+        """Attempt to obtain a fresh JWT using an existing bearer token."""
+        url = str(ctx.get("url") or "").strip().rstrip("/")
+        api_key = str(ctx.get("api_key") or "").strip()
+        user_id = str(ctx.get("user_id") or "").strip().lower()
+        token_slot = str(ctx.get("token_slot") or "").strip()
+        nickname = str(ctx.get("nickname") or "").strip()
+        company = str(ctx.get("company") or "").strip()
+
+        if not url or not api_key or not token_slot or not existing_token:
+            return None
+
+        candidates = [
+            ("POST", f"{url}/TokenResource.svc/", ""),
+            ("POST", f"{url}/TokenResource.svc/RefreshToken", ""),
+            ("POST", f"{url}/TokenResource.svc/refresh", ""),
+            ("GET", f"{url}/TokenResource.svc/", None),
+        ]
+
+        base_headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "Authorization": f"Bearer {existing_token}",
+        }
+        if company:
+            base_headers["X-Epicor-Company"] = company
+
+        for method, endpoint, payload in candidates:
+            try:
+                if method == "POST":
+                    resp = requests.post(endpoint, headers=base_headers, data=payload, timeout=15)
+                else:
+                    resp = requests.get(endpoint, headers=base_headers, timeout=15)
+                resp.raise_for_status()
+                data = resp.json() if resp.content else {}
+                if not isinstance(data, dict):
+                    continue
+
+                token = str(data.get("AccessToken") or data.get("access_token") or "").strip()
+                if not token:
+                    continue
+
+                probe_ok, _ = self._validate_bearer_access(
+                    url=url,
+                    api_key=api_key,
+                    company=company,
+                    token=token,
+                    user_id=user_id,
+                )
+                if not probe_ok:
+                    continue
+
+                data["_local_timestamp"] = time.time()
+                data["_last_used"] = time.time()
+                data["user_id"] = user_id
+                data["env_name"] = nickname
+                if company:
+                    data["current_company"] = company
+
+                self.touch_session(token_slot, data, nickname)
+                return token
+            except Exception:
+                continue
+
+        return None
+
+    def _validate_bearer_access(
+        self,
+        url: str,
+        api_key: str,
+        company: str,
+        token: str,
+        user_id: str,
+    ) -> Tuple[bool, str]:
+        """Validate bearer usability against a real BO endpoint."""
+        base_url = str(url or "").strip().rstrip("/")
+        api_key = str(api_key or "").strip()
+        company = str(company or "").strip()
+        token = str(token or "").strip()
+        user_id = str(user_id or "").strip()
+        if not base_url or not api_key or not company or not token:
+            return False, "missing probe inputs"
+
+        user_id_wc = user_id.replace("'", "''")
+        where = f"DcdUserID = '{user_id_wc}'" if user_id else ""
+        params = {
+            "whereClauseUserFile": where,
+            "whereClauseUserComp": where,
+            "whereClauseUserCompExt": "",
+            "pageSize": 1,
+            "absolutePage": 1,
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+            "X-Epicor-Company": company,
+            "X-Company": company,
+        }
+
+        bo_path = "Erp.BO.UserFileSvc/GetRows"
+        candidates = []
+        base_lower = base_url.lower()
+        if "/api/v2/" in base_lower:
+            candidates.append(f"{base_url}/{bo_path}")
+            api_v2_root = base_url[:base_lower.index("/api/v2/") + len("/api/v2")]
+            candidates.append(f"{api_v2_root}/{bo_path}")
+        else:
+            candidates.append(f"{base_url}/api/v2/odata/{company}/{bo_path}")
+            candidates.append(f"{base_url}/api/v2/{bo_path}")
+
+        seen = set()
+        ordered = []
+        for item in candidates:
+            normalized = item.rstrip("/")
+            if normalized and normalized not in seen:
+                ordered.append(normalized)
+                seen.add(normalized)
+
+        last_status = "no-response"
+        for endpoint in ordered:
+            try:
+                response = requests.get(endpoint, headers=headers, params=params, timeout=15)
+                if response.ok:
+                    return True, f"{response.status_code} {endpoint}"
+                last_status = str(response.status_code)
+                body = (response.text or "")[:200].lower()
+                if "invalid api key" in body:
+                    return False, "api key rejected"
+            except Exception as exc:
+                last_status = str(exc)
+
+        return False, f"probe failed: {last_status}"
+
+    def renew(
+        self,
+        env_name: str = "",
+        user_id: str = "",
+        company_id: str = "",
+        from_token: bool = False,
+        allow_password_fallback: bool = False,
+    ):
+        """Force a fresh JWT fetch from TokenResource and persist it to keyring."""
+        env_name = str(env_name or "").strip()
+        user_id = str(user_id or "").strip()
+        company_id = str(company_id or "").strip()
+
+        servers = self._get_server_dict()
+
+        if not env_name or not user_id:
+            selected_env, selected_user, selected_co = self.prompt_for_env()
+            env_name = env_name or selected_env
+            user_id = user_id or selected_user
+            company_id = company_id or selected_co
+
+        name, cfg = self._find_env(servers, env_name)
+        if not cfg:
+            print(f"❌ No environment named '{env_name}' found.")
+            return
+
+        if not user_id:
+            sessions = cfg.get("sessions", []) or []
+            if sessions:
+                user_id = str(sessions[0]).strip()
+
+        if not user_id:
+            while True:
+                entered = input("Epicor User ID: ").strip()
+                if entered:
+                    user_id = entered
+                    break
+                print("User ID cannot be empty. Please enter your Epicor User ID.")
+
+        if not company_id:
+            try:
+                slot_guess = self._get_token_key(name, user_id, cfg.get("api_key", ""))
+                meta = self._get_token_meta(slot_guess) or {}
+                company_id = str(meta.get("current_company") or "").strip()
+            except Exception:
+                company_id = ""
+
+        if not company_id:
+            companies = [c.strip() for c in str(cfg.get("companies", "")).split(",") if c.strip()]
+            company_id = companies[0] if companies else ""
+
+        api_key = cfg.get("api_key", "")
+        slot = self._get_token_key(name, user_id, api_key)
+        ctx = {
+            "url": cfg.get("url", ""),
+            "api_key": api_key,
+            "user_id": user_id,
+            "token_slot": slot,
+            "nickname": name,
+            "company": company_id,
+        }
+
+        if from_token:
+            current_meta = self._get_token_meta(slot) or {}
+            current_token = str(current_meta.get("AccessToken") or current_meta.get("access_token") or "").strip()
+            renewed = self._renew_token_from_existing(ctx, current_token)
+            if renewed:
+                print(f"\n✅ Token renewed from existing bearer for {name}/{user_id} (Co: {company_id})")
+                self.use((name, user_id, company_id))
+                return
+
+            print("❌ Token-based renewal failed for this environment.")
+            if not allow_password_fallback:
+                print("Tip: rerun with --allow-password-fallback to prompt for password-based token re-issue.")
+                return
+
+        token = self._fetch_token_kinetic(ctx)
+        if not token:
+            print("❌ Token renewal failed.")
+            return
+
+        print(f"\n✅ Token renewed for {name}/{user_id} (Co: {company_id})")
+        self.use((name, user_id, company_id))
 
     def delete(self, env_name: str):
         """Delete a saved server entry by nickname (case-insensitive).
@@ -1223,6 +1565,15 @@ def main():
     subparsers.add_parser("panic")
     subparsers.add_parser("validate")
     subparsers.add_parser("clean-sessions")
+    set_key_p = subparsers.add_parser("set-api-key")
+    set_key_p.add_argument("env")
+    set_key_p.add_argument("--value", default="")
+    renew_p = subparsers.add_parser("renew")
+    renew_p.add_argument("env", nargs="?", default="")
+    renew_p.add_argument("--user", default="")
+    renew_p.add_argument("--co", default="")
+    renew_p.add_argument("--from-token", action="store_true")
+    renew_p.add_argument("--allow-password-fallback", action="store_true")
     
     sync_p = subparsers.add_parser("sync-companies")
     sync_p.add_argument("env")
@@ -1327,6 +1678,15 @@ def main():
         elif args.command == "panic": mgr.panic()
         elif args.command == "validate": mgr.validate()
         elif args.command == "clean-sessions": mgr.clean_sessions()
+        elif args.command == "set-api-key": mgr.set_api_key(args.env, args.value)
+        elif args.command == "renew":
+            mgr.renew(
+                args.env,
+                args.user,
+                args.co,
+                from_token=bool(args.from_token),
+                allow_password_fallback=bool(args.allow_password_fallback),
+            )
         elif args.command == "sync-companies": mgr.sync_companies(args.env)
         elif args.command == "inspect": mgr.inspect(args.env)
         elif args.command == "use": mgr.use(args.env)
