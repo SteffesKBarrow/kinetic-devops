@@ -10,7 +10,12 @@ on:
 jobs:
   sensitive-data-gate:
     name: Sensitive Data Gate
-    runs-on: ubuntu-latest
+    runs-on:
+      - linux
+      - docker
+
+    container:
+      image: python:3.12-bookworm
 
     steps:
       - name: Checkout
@@ -18,10 +23,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Verify Python
+        run: python --version
 
       - name: Install dependencies
         run: |
@@ -33,12 +36,21 @@ jobs:
 
   required-test:
     name: Python Test Gate (required, py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on:
+      - linux
+      - docker
+
     needs: sensitive-data-gate
+
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version:
+          - "3.10"
+          - "3.12"
+
+    container:
+      image: python:${{ matrix.python-version }}-bookworm
 
     steps:
       - name: Checkout
@@ -46,10 +58,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Verify Python
+        run: python --version
 
       - name: Install dependencies
         run: |
@@ -61,8 +71,14 @@ jobs:
 
   package-validation:
     name: Package Validation
-    runs-on: ubuntu-latest
+    runs-on:
+      - linux
+      - docker
+
     needs: required-test
+
+    container:
+      image: python:3.12-bookworm
 
     steps:
       - name: Checkout
@@ -70,10 +86,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Verify Python
+        run: python --version
 
       - name: Install build and validation tools
         run: |
@@ -89,12 +103,23 @@ jobs:
 
   advisory-test:
     name: Python Test Gate (advisory, py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on:
+      - linux
+      - docker
+
     continue-on-error: true
+
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.13", "3.14"]
+        python-version:
+          - "3.8"
+          - "3.9"
+          - "3.13"
+          - "3.14"
+
+    container:
+      image: python:${{ matrix.python-version }}-bookworm
 
     steps:
       - name: Checkout
@@ -102,10 +127,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Verify Python
+        run: python --version
 
       - name: Install dependencies
         run: |
