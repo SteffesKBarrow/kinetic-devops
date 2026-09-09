@@ -6,6 +6,7 @@ from kinetic_devops.export_all import (
     _collect_function_ids_from_payload,
     _extract_file_payload,
     _parse_query_params,
+    _split_companies,
     _deep_template,
 )
 
@@ -74,6 +75,10 @@ class TestExportAllParsing(unittest.TestCase):
         self.assertEqual(rendered["endpoint"], "/api/v2/odata/EPIC06/Ice.BO.BAQDesignerSvc/GetList")
         self.assertEqual(rendered["nested"]["url"], "https://kinetic.example.com/api/v2/odata/EPIC06/BaqSvc/zTest/Data")
         self.assertEqual(rendered["list"][0], "EPIC06")
+
+    def test_split_companies_preserves_order_and_dedups_case_insensitive(self):
+        parsed = _split_companies("  A01 , b02,A01, B02 , C03 ,, ")
+        self.assertEqual(parsed, ["A01", "b02", "C03"])
 
 
 if __name__ == "__main__":

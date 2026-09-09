@@ -420,7 +420,7 @@ class KineticConfigManager(KineticCore):
         self._print_env_var("KIN_API_KEY", api_key)
         self._print_env_var("KIN_TOKEN", token)
 
-    def prompt_for_env(self, passive: bool = False) -> Tuple[str, str, str]:
+    def prompt_for_env(self, passive: bool = False, prompt_reuse: bool = False) -> Tuple[str, str, str]:
         # 1. GLOBAL QUICK-CONNECT: Check the last session touched by ANY tool
         last_slot = keyring.get_password("KineticSDK", "LAST_GLOBAL_SESSION")
         
@@ -457,7 +457,17 @@ class KineticConfigManager(KineticCore):
                 # instead of silently reusing an incomplete session.
                 if slot_valid and meta.get('current_company'):
                     print(f"\n✨ Last active: ID_{display_id} @ {name} (Co: {co})")
-                    if input(f"Reuse this session? [Y/n]: ").strip().lower() in ('', 'y', 'yes'):
+                    # Default behavior is to reuse immediately. To restore
+                    # interactive confirmation, either pass prompt_reuse=True
+                    # or set KIN_PROMPT_REUSE=1.
+                    should_prompt_reuse = prompt_reuse or os.getenv("KIN_PROMPT_REUSE", "").strip().lower() in {
+                        "1", "true", "yes", "y", "on"
+                    }
+                    if should_prompt_reuse:
+                        if input("Reuse this session? [Y/n]: ").strip().lower() in ('', 'y', 'yes'):
+                            return name, user_id, co
+                    else:
+                        print("Auto-reusing last active session.")
                         return name, user_id, co
 
         # 3. SELECT ENVIRONMENT

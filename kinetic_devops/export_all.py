@@ -12,6 +12,7 @@ Supports:
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
@@ -225,8 +226,42 @@ def _parse_query_params(raw: str) -> Dict[str, str]:
     return {k: v for k, v in parse_qsl(text, keep_blank_values=True)}
 
 
+def _split_companies(raw: str) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in str(raw or "").split(","):
+        company = item.strip()
+        if not company:
+            continue
+        upper = company.upper()
+        if upper in seen:
+            continue
+        seen.add(upper)
+        out.append(company)
+    return out
+
+
 class KineticExportAllService(KineticEFxService):
     """Service that discovers and executes ExportAllTheThings export functions."""
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._last_discovery_error: Dict[str, Any] = {}
+
+    def resolve_companies(self, explicit_companies: Optional[List[str]] = None) -> List[str]:
+        if explicit_companies:
+            provided = [c.strip() for c in explicit_companies if isinstance(c, str) and c.strip()]
+            if provided:
+                return _split_companies(",".join(provided))
+
+        base_cfg = self.mgr.get_base_config(self.config.get("nickname", "")) or {}
+        raw_companies = base_cfg.get("companies") or self.config.get("company", "")
+        companies = _split_companies(str(raw_companies))
+        if companies:
+            return companies
+
+        fallback = str(self.config.get("company", "")).strip()
+        return [fallback] if fallback else []
 
     def discover_export_functions(
         self,
@@ -243,6 +278,8 @@ class KineticExportAllService(KineticEFxService):
         headers = self.mgr.get_auth_headers(self.config)
         payload = {"libraryID": library}
 
+        self._last_discovery_error = {}
+
         try:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=120)
             if not resp.ok:
@@ -252,11 +289,32 @@ class KineticExportAllService(KineticEFxService):
             discovered = [fn for fn in _collect_function_ids_from_payload(data) if fn.startswith("Export")]
             if discovered:
                 return sorted(set(discovered))
-        except Exception:
+        except requests.HTTPError as exc:
+            status_code = None
+            if exc.response is not None:
+                status_code = exc.response.status_code
+            self._last_discovery_error = {
+                "kind": "http",
+                "status_code": status_code,
+                "error": str(exc),
+                "endpoint": endpoint,
+            }
+        except Exception as exc:
+            self._last_discovery_error = {
+                "kind": "unknown",
+                "status_code": None,
+                "error": str(exc),
+                "endpoint": endpoint,
+            }
+
+        if self._last_discovery_error:
             # Fall back to known defaults for resilient CLI behavior.
             pass
 
         return list(DEFAULT_EXPORT_FUNCTIONS) if fallback_to_defaults else []
+
+    def get_last_discovery_error(self) -> Dict[str, Any]:
+        return dict(self._last_discovery_error)
 
     def _request_native(
         self,
@@ -305,6 +363,8 @@ class KineticExportAllService(KineticEFxService):
         body: Optional[Dict[str, Any]] = None,
         company: str = "",
         output_name: str = "native_export",
+        dedup_registry: Optional[Dict[str, Dict[str, str]]] = None,
+        dedup_namespace: str = "",
     ) -> Dict[str, Any]:
         os.makedirs(out_dir, exist_ok=True)
         response = self._request_native(
@@ -318,6 +378,26 @@ class KineticExportAllService(KineticEFxService):
         content_type = (response.headers.get("content-type") or "").lower()
         base_name = _safe_name(output_name)
         output_file = ""
+        content_hash = hashlib.sha256(response.content).hexdigest()
+        company_name = company or self.config.get("company", "")
+        namespace = dedup_namespace or output_name
+        dedup_key = f"{namespace}:{content_hash}"
+
+        if dedup_registry is not None and dedup_key in dedup_registry:
+            existing = dedup_registry[dedup_key]
+            return {
+                "id": output_name,
+                "company": company_name,
+                "success": True,
+                "duplicate": True,
+                "duplicate_of": existing.get("output_file", ""),
+                "method": method.upper(),
+                "endpoint": endpoint,
+                "output_file": existing.get("output_file", ""),
+                "payload_type": existing.get("payload_type", ""),
+                "content_hash": content_hash,
+                "status_code": response.status_code,
+            }
 
         if "application/json" in content_type:
             payload = response.json()
@@ -348,13 +428,23 @@ class KineticExportAllService(KineticEFxService):
                 with open(output_file, "wb") as f:
                     f.write(response.content)
 
+        if dedup_registry is not None:
+            dedup_registry[dedup_key] = {
+                "output_file": output_file,
+                "payload_type": payload_type,
+            }
+
         return {
             "id": output_name,
+            "company": company_name,
             "success": True,
+            "duplicate": False,
+            "duplicate_of": "",
             "method": method.upper(),
             "endpoint": endpoint,
             "output_file": output_file,
             "payload_type": payload_type,
+            "content_hash": content_hash,
             "status_code": response.status_code,
         }
 
@@ -420,6 +510,106 @@ class KineticExportAllService(KineticEFxService):
             "summary": manifest,
         }
 
+    def export_native_all_companies(
+        self,
+        out_dir: str,
+        plan: List[Dict[str, Any]],
+        companies: Optional[List[str]] = None,
+        continue_on_error: bool = True,
+        dedup: bool = True,
+    ) -> Dict[str, Any]:
+        os.makedirs(out_dir, exist_ok=True)
+        company_list = self.resolve_companies(companies)
+        dedup_registry: Optional[Dict[str, Dict[str, str]]] = {} if dedup else None
+
+        results: List[Dict[str, Any]] = []
+        company_summaries: List[Dict[str, Any]] = []
+        total_failures = 0
+        total_duplicates = 0
+
+        for company in company_list:
+            company_dir = os.path.join(out_dir, _safe_name(company))
+            os.makedirs(company_dir, exist_ok=True)
+
+            company_results: List[Dict[str, Any]] = []
+            company_failures = 0
+            company_duplicates = 0
+
+            for item in plan:
+                item_id = str(item.get("id", "native_item"))
+                try:
+                    result = self.export_native_one(
+                        out_dir=company_dir,
+                        endpoint=str(item.get("endpoint", "")),
+                        method=str(item.get("method", "GET")),
+                        params=str(item.get("params", "")),
+                        body=item.get("body") if isinstance(item.get("body"), dict) else {},
+                        company=company,
+                        output_name=str(item.get("output", item_id)).rsplit(".", 1)[0],
+                        dedup_registry=dedup_registry,
+                        dedup_namespace=item_id,
+                    )
+                    if result.get("duplicate"):
+                        company_duplicates += 1
+                        total_duplicates += 1
+                    company_results.append(result)
+                except Exception as exc:
+                    company_failures += 1
+                    total_failures += 1
+                    company_results.append(
+                        {
+                            "id": item_id,
+                            "company": company,
+                            "success": False,
+                            "duplicate": False,
+                            "duplicate_of": "",
+                            "method": str(item.get("method", "GET")).upper(),
+                            "endpoint": str(item.get("endpoint", "")),
+                            "output_file": "",
+                            "error": str(exc),
+                        }
+                    )
+                    if not continue_on_error:
+                        break
+
+            results.extend(company_results)
+            company_summaries.append(
+                {
+                    "company": company,
+                    "total_items": len(company_results),
+                    "failed_items": company_failures,
+                    "duplicate_items": company_duplicates,
+                    "successful_items": len([r for r in company_results if r.get("success")]),
+                }
+            )
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        manifest_path = os.path.join(out_dir, f"native_export_manifest_all_companies_{timestamp}.json")
+        manifest = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "mode": "native-all-companies",
+            "companies": company_list,
+            "dedup": dedup,
+            "total_companies": len(company_list),
+            "total_items": len(results),
+            "failed_items": total_failures,
+            "duplicate_items": total_duplicates,
+            "successful_items": len(results) - total_failures,
+            "company_summaries": company_summaries,
+            "results": results,
+        }
+
+        manifest_path = self.resolve_output_path(manifest_path, conflict_resolution="timestamp")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+        return {
+            "success": total_failures == 0,
+            "manifest": manifest_path,
+            "results": results,
+            "summary": manifest,
+        }
+
     def export_one(
         self,
         function_id: str,
@@ -428,6 +618,8 @@ class KineticExportAllService(KineticEFxService):
         company: str = "",
         input_data: Optional[Dict[str, Any]] = None,
         extension: str = "zip",
+        dedup_registry: Optional[Dict[str, Dict[str, str]]] = None,
+        dedup_namespace: str = "",
     ) -> Dict[str, Any]:
         os.makedirs(out_dir, exist_ok=True)
 
@@ -442,10 +634,37 @@ class KineticExportAllService(KineticEFxService):
         if not payload_key:
             return {
                 "function_id": function_id,
+                "company": company or self.config.get("company", ""),
                 "success": False,
+                "duplicate": False,
+                "duplicate_of": "",
                 "output_file": "",
                 "payload_key": "",
                 "error": "No file-like payload found in EFx response.",
+                "response": result,
+            }
+
+        if payload_type == "base64" and payload_bytes is not None:
+            content_bytes = payload_bytes
+        else:
+            content_bytes = (payload_text or "").encode("utf-8")
+
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        namespace = dedup_namespace or function_id
+        dedup_key = f"{namespace}:{content_hash}"
+
+        if dedup_registry is not None and dedup_key in dedup_registry:
+            existing = dedup_registry[dedup_key]
+            return {
+                "function_id": function_id,
+                "company": company or self.config.get("company", ""),
+                "success": True,
+                "duplicate": True,
+                "duplicate_of": existing.get("output_file", ""),
+                "output_file": existing.get("output_file", ""),
+                "payload_key": payload_key,
+                "payload_type": payload_type,
+                "content_hash": content_hash,
                 "response": result,
             }
 
@@ -460,12 +679,22 @@ class KineticExportAllService(KineticEFxService):
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(payload_text or "")
 
+        if dedup_registry is not None:
+            dedup_registry[dedup_key] = {
+                "output_file": output_path,
+                "payload_type": payload_type,
+            }
+
         return {
             "function_id": function_id,
+            "company": company or self.config.get("company", ""),
             "success": True,
+            "duplicate": False,
+            "duplicate_of": "",
             "output_file": output_path,
             "payload_key": payload_key,
             "payload_type": payload_type,
+            "content_hash": content_hash,
             "response": result,
         }
 
@@ -555,6 +784,136 @@ class KineticExportAllService(KineticEFxService):
             "summary": manifest,
         }
 
+    def export_all_companies(
+        self,
+        out_dir: str,
+        library: str = DEFAULT_EATT_LIBRARY,
+        companies: Optional[List[str]] = None,
+        include: Optional[List[str]] = None,
+        exclude: Optional[List[str]] = None,
+        input_data: Optional[Dict[str, Any]] = None,
+        continue_on_error: bool = True,
+        extension: str = "zip",
+        dedup: bool = True,
+    ) -> Dict[str, Any]:
+        os.makedirs(out_dir, exist_ok=True)
+        company_list = self.resolve_companies(companies)
+        dedup_registry: Optional[Dict[str, Dict[str, str]]] = {} if dedup else None
+
+        results: List[Dict[str, Any]] = []
+        company_summaries: List[Dict[str, Any]] = []
+        total_failures = 0
+        total_duplicates = 0
+
+        for company in company_list:
+            company_dir = os.path.join(out_dir, _safe_name(company))
+            os.makedirs(company_dir, exist_ok=True)
+
+            functions = self.discover_export_functions(library=library, company=company)
+
+            if include:
+                allowed = {name.strip() for name in include if name.strip()}
+                functions = [fn for fn in functions if fn in allowed]
+
+            if exclude:
+                denied = {name.strip() for name in exclude if name.strip()}
+                functions = [fn for fn in functions if fn not in denied]
+
+            company_results: List[Dict[str, Any]] = []
+            company_failures = 0
+            company_duplicates = 0
+
+            for function_id in functions:
+                try:
+                    item = self.export_one(
+                        function_id=function_id,
+                        out_dir=company_dir,
+                        library=library,
+                        company=company,
+                        input_data=input_data,
+                        extension=extension,
+                        dedup_registry=dedup_registry,
+                        dedup_namespace=function_id,
+                    )
+                    if item.get("duplicate"):
+                        company_duplicates += 1
+                        total_duplicates += 1
+                    company_results.append(item)
+                    if not item.get("success", False):
+                        company_failures += 1
+                        total_failures += 1
+                        if not continue_on_error:
+                            break
+                except Exception as exc:
+                    company_failures += 1
+                    total_failures += 1
+                    company_results.append(
+                        {
+                            "function_id": function_id,
+                            "company": company,
+                            "success": False,
+                            "duplicate": False,
+                            "duplicate_of": "",
+                            "output_file": "",
+                            "error": str(exc),
+                        }
+                    )
+                    if not continue_on_error:
+                        break
+
+            results.extend(company_results)
+            company_summaries.append(
+                {
+                    "company": company,
+                    "total_functions": len(functions),
+                    "failed_functions": company_failures,
+                    "duplicate_functions": company_duplicates,
+                    "successful_functions": len([r for r in company_results if r.get("success")]),
+                }
+            )
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        manifest_path = os.path.join(out_dir, f"export_manifest_all_companies_{timestamp}.json")
+        manifest = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "mode": "eatt-all-companies",
+            "library": library,
+            "companies": company_list,
+            "dedup": dedup,
+            "total_companies": len(company_list),
+            "total_functions": len(results),
+            "failed_functions": total_failures,
+            "duplicate_functions": total_duplicates,
+            "successful_functions": len(results) - total_failures,
+            "company_summaries": company_summaries,
+            "results": [
+                {
+                    "function_id": item.get("function_id", ""),
+                    "company": item.get("company", ""),
+                    "success": item.get("success", False),
+                    "duplicate": item.get("duplicate", False),
+                    "duplicate_of": item.get("duplicate_of", ""),
+                    "output_file": item.get("output_file", ""),
+                    "payload_key": item.get("payload_key", ""),
+                    "payload_type": item.get("payload_type", ""),
+                    "content_hash": item.get("content_hash", ""),
+                    "error": item.get("error", ""),
+                }
+                for item in results
+            ],
+        }
+
+        manifest_path = self.resolve_output_path(manifest_path, conflict_resolution="timestamp")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+        return {
+            "success": total_failures == 0,
+            "manifest": manifest_path,
+            "results": results,
+            "summary": manifest,
+        }
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -564,6 +923,9 @@ def main() -> None:
     parser.add_argument("--env", help="Environment nickname")
     parser.add_argument("--user", help="User ID for session")
     parser.add_argument("--co", help="Company override", default="")
+    parser.add_argument("--all-companies", action="store_true", help="Run exports for each configured company")
+    parser.add_argument("--companies", nargs="*", default=None, help="Optional explicit company list for --all-companies")
+    parser.add_argument("--no-dedup", action="store_true", help="Disable content-hash de-duplication in --all-companies mode")
     parser.add_argument("--library", default=DEFAULT_EATT_LIBRARY, help="EFx library name")
     parser.add_argument("--out-dir", default=os.path.join("exports", "ExportAllTheThings"), help="Output directory")
     parser.add_argument("--list", action="store_true", help="List discovered export functions only")
@@ -611,14 +973,37 @@ def main() -> None:
             fallback_to_defaults=(args.mode == "eatt"),
         )
         if args.mode == "auto":
+            discovery_error = service.get_last_discovery_error()
+            if discovery_error.get("kind") == "http" and discovery_error.get("status_code") in {401, 403}:
+                print(json.dumps({
+                    "mode": "auto",
+                    "success": False,
+                    "error": "ExportAllTheThings discovery failed with authentication/authorization error; refusing native fallback.",
+                    "discovery_error": discovery_error,
+                }, indent=2, ensure_ascii=False))
+                sys.exit(1)
             effective_mode = "eatt" if discovered_functions else "native"
 
     if effective_mode == "eatt":
         if args.list:
-            print(json.dumps({"mode": "eatt", "library": args.library, "functions": discovered_functions}, indent=2))
+            if args.all_companies:
+                companies = service.resolve_companies(args.companies)
+                functions_by_company = {
+                    co: service.discover_export_functions(library=args.library, company=co)
+                    for co in companies
+                }
+                print(json.dumps({
+                    "mode": "eatt",
+                    "library": args.library,
+                    "all_companies": True,
+                    "companies": companies,
+                    "functions_by_company": functions_by_company,
+                }, indent=2))
+            else:
+                print(json.dumps({"mode": "eatt", "library": args.library, "functions": discovered_functions}, indent=2))
             return
 
-        if args.function:
+        if args.function and not args.all_companies:
             result = service.export_one(
                 function_id=args.function,
                 out_dir=args.out_dir,
@@ -630,53 +1015,101 @@ def main() -> None:
             print(json.dumps(result, indent=2, ensure_ascii=False))
             sys.exit(0 if result.get("success") else 1)
 
-        outcome = service.export_all(
-            out_dir=args.out_dir,
-            library=args.library,
-            company=args.co,
-            include=args.include,
-            exclude=args.exclude,
-            input_data=input_data,
-            continue_on_error=not args.stop_on_error,
-            extension=args.extension,
-        )
+        if args.all_companies:
+            include = list(args.include or [])
+            if args.function:
+                include = [args.function]
+
+            outcome = service.export_all_companies(
+                out_dir=args.out_dir,
+                library=args.library,
+                companies=args.companies,
+                include=include,
+                exclude=args.exclude,
+                input_data=input_data,
+                continue_on_error=not args.stop_on_error,
+                extension=args.extension,
+                dedup=not args.no_dedup,
+            )
+        else:
+            outcome = service.export_all(
+                out_dir=args.out_dir,
+                library=args.library,
+                company=args.co,
+                include=args.include,
+                exclude=args.exclude,
+                input_data=input_data,
+                continue_on_error=not args.stop_on_error,
+                extension=args.extension,
+            )
     else:
         if args.list:
-            print(json.dumps({
+            payload = {
                 "mode": "native",
                 "default_plan_ids": [item.get("id", "") for item in DEFAULT_NATIVE_EXPORT_PLAN],
-            }, indent=2))
+            }
+            if args.all_companies:
+                payload["all_companies"] = True
+                payload["companies"] = service.resolve_companies(args.companies)
+            print(json.dumps(payload, indent=2))
             return
 
         if args.native_endpoint:
-            single = service.export_native_one(
-                out_dir=args.out_dir,
-                endpoint=args.native_endpoint,
-                method=args.native_method,
-                params=args.native_params,
-                body=native_body,
-                company=args.co,
-                output_name=args.native_name,
-            )
-            print(json.dumps(single, indent=2, ensure_ascii=False))
-            sys.exit(0 if single.get("success") else 1)
-
-        if args.native_plan:
-            with open(args.native_plan, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if not isinstance(loaded, list):
-                print("Error: --native-plan JSON must be a list of request objects")
-                sys.exit(2)
-            plan = loaded
+            if args.all_companies:
+                outcome = service.export_native_all_companies(
+                    out_dir=args.out_dir,
+                    companies=args.companies,
+                    continue_on_error=not args.stop_on_error,
+                    dedup=not args.no_dedup,
+                    plan=[
+                        {
+                            "id": args.native_name,
+                            "method": args.native_method,
+                            "endpoint": args.native_endpoint,
+                            "params": args.native_params,
+                            "body": native_body,
+                            "output": args.native_name,
+                        }
+                    ],
+                )
+            else:
+                single = service.export_native_one(
+                    out_dir=args.out_dir,
+                    endpoint=args.native_endpoint,
+                    method=args.native_method,
+                    params=args.native_params,
+                    body=native_body,
+                    company=args.co,
+                    output_name=args.native_name,
+                )
+                print(json.dumps(single, indent=2, ensure_ascii=False))
+                sys.exit(0 if single.get("success") else 1)
         else:
-            plan = DEFAULT_NATIVE_EXPORT_PLAN
+            if args.native_plan:
+                with open(args.native_plan, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if not isinstance(loaded, list):
+                    print("Error: --native-plan JSON must be a list of request objects")
+                    sys.exit(2)
+                plan = loaded
+            else:
+                plan = DEFAULT_NATIVE_EXPORT_PLAN
 
-        outcome = service.export_native_all(
-            out_dir=args.out_dir,
-            plan=plan,
-            company=args.co,
-            continue_on_error=not args.stop_on_error,
-        )
+            if args.all_companies:
+                outcome = service.export_native_all_companies(
+                    out_dir=args.out_dir,
+                    plan=plan,
+                    companies=args.companies,
+                    continue_on_error=not args.stop_on_error,
+                    dedup=not args.no_dedup,
+                )
+            else:
+                outcome = service.export_native_all(
+                    out_dir=args.out_dir,
+                    plan=plan,
+                    company=args.co,
+                    continue_on_error=not args.stop_on_error,
+                )
 
     print(json.dumps({
         "mode": effective_mode,

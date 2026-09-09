@@ -34,6 +34,9 @@ $RECYCLE.BIN/
 .env
 .env.local
 .env.*.local
+scripts/ai_env.local.ps1
+scripts/ai_env.local.sh
+scripts/ai_env.local.bat
 
 # Virtual environment
 venv/

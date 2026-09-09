@@ -32,6 +32,12 @@ if (Test-Path "$VenvPath\Scripts\Activate.ps1") {
 # 3. Set PYTHONPATH so the helper scripts can import kinetic_devops
 $env:PYTHONPATH = $rootDir
 
+# Optional local AI settings live in a separate, ignored file.
+$localAiConfig = Join-Path $scriptDir 'ai_env.local.ps1'
+if (Test-Path $localAiConfig) {
+    . $localAiConfig
+}
+
 
 # 4. Call env_init.py to generate env variables
 Write-Host "Kinetic environment initialization..."

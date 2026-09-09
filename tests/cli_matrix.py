@@ -1,6 +1,7 @@
 """Shared CLI entrypoint matrix for regression tests."""
 
 CLI_MODULES = [
+    {"module": "analysis", "script": "analysis.py", "router": "analysis"},
     {"module": "auth", "script": "auth.py", "router": "auth"},
     {"module": "baq", "script": "baq.py", "router": "baq"},
     {"module": "boreader", "script": "boreader.py", "router": None},
@@ -12,6 +13,7 @@ CLI_MODULES = [
     {"module": "report_service", "script": "report_service.py", "router": "report"},
     {"module": "repo_maker", "script": "repo_maker.py", "router": "repomaker"},
     {"module": "solutions", "script": "solutions.py", "router": "solutions"},
+    {"module": "trim_trace_paths", "script": "trim_trace_paths.py", "router": None},
     {"module": "zdatatable", "script": "zdatatable.py", "router": "zdatatable"},
 ]
 

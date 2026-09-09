@@ -408,9 +408,31 @@ def find_sensitive_data(
     return findings
 
 
+def _resolve_scan_files(scan_path: str, explicit_file: str, use_gitignore: bool, exclude_dirs: set) -> List[str]:
+    target_file = str(explicit_file or "").strip()
+    if target_file:
+        if not os.path.isfile(target_file):
+            return []
+        exclude_tokens = _normalize_exclude_tokens(exclude_dirs)
+        rel_path = os.path.basename(target_file)
+        if _path_is_excluded(rel_path, exclude_tokens):
+            return []
+        return [target_file]
+
+    if os.path.isfile(scan_path):
+        exclude_tokens = _normalize_exclude_tokens(exclude_dirs)
+        rel_path = os.path.basename(scan_path)
+        if _path_is_excluded(rel_path, exclude_tokens):
+            return []
+        return [scan_path]
+
+    return get_files_to_scan(scan_path, use_gitignore=use_gitignore, exclude_dirs=exclude_dirs)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Scan for sensitive data in the project.")
-    parser.add_argument("--path", default=".", help="The path to scan.")
+    parser.add_argument("--path", default=".", help="The directory path to scan.")
+    parser.add_argument("--file", default="", help="A single file to scan instead of a directory.")
     parser.add_argument("--no-gitignore", action="store_true", help="Do not use .gitignore for file exclusion.")
     parser.add_argument("--ignore-defaults", action="store_true", help="Ignore the default exclusion lists (build, metadata, etc.).")
     parser.add_argument("--exclude", nargs='+', default=[], help="Additional directories to exclude.")
@@ -471,9 +493,14 @@ def main():
     
     # --- Run Scans ---
     findings = []
-    
-    print(f"Gathering files in {args.path}...")
-    files = get_files_to_scan(args.path, use_gitignore=not args.no_gitignore, exclude_dirs=exclude_dirs)
+
+    scan_target = args.file.strip() or args.path
+    if args.file.strip():
+        print(f"Gathering file {args.file}...")
+    else:
+        print(f"Gathering files in {args.path}...")
+
+    files = _resolve_scan_files(args.path, args.file, use_gitignore=not args.no_gitignore, exclude_dirs=exclude_dirs)
     print(f"Scanning {len(files)} files...")
     findings.extend(find_sensitive_data(files, all_patterns))
 
