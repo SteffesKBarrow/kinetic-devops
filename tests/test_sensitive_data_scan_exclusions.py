@@ -4,11 +4,12 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from kinetic_devops.find_sensitive_data import get_files_to_scan, scan_git_history
+from kinetic_devops.find_sensitive_data import get_files_to_scan, scan_git_history, _should_report_generic_base64
 
 
 class _FakePopen:
@@ -104,6 +105,65 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
         self.assertIn("exports/inside.txt", location)
         self.assertEqual(pattern_name, "PRIVATE_KEY_BLOCK")
         self.assertIn("INSIDE", match)
+
+    def test_cli_fail_on_findings_returns_nonzero(self):
+        secret_file = os.path.join(self.td, "secret.txt")
+        with open(secret_file, "w", encoding="utf-8") as f:
+            f.write("PRIVATE KEY SHOULD FAIL\n")
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "kinetic_devops.find_sensitive_data",
+                "--file",
+                secret_file,
+                "--no-keyring",
+                "--no-generic-base64",
+                "--fail-on-findings",
+            ],
+            cwd=self.td,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            timeout=60,
+        )
+
+        stdout_text = (result.stdout or b"").decode("utf-8", errors="replace")
+        stderr_text = (result.stderr or b"").decode("utf-8", errors="replace")
+        self.assertEqual(result.returncode, 1, msg=stdout_text + stderr_text)
+        self.assertIn("Sensitive data found", stdout_text)
+
+    def test_generic_base64_ignores_camel_case_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("GetSolutionItemsAsDynamicDataSet"))
+
+    def test_generic_base64_ignores_snake_case_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("token_payload_blob_string_value"))
+
+    def test_generic_base64_can_include_alpha_only_when_requested(self):
+        self.assertTrue(
+            _should_report_generic_base64(
+                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",
+                include_alpha_only=True,
+            )
+        )
+
+    def test_generic_base64_can_include_snake_case_when_requested(self):
+        self.assertTrue(
+            _should_report_generic_base64(
+                "YWJjX2RlZl9naGlfamtsX21ub19wcXJfc3R1",
+                include_snake_case=True,
+            )
+        )
+
+    def test_generic_base64_ignores_dash_separated_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("manual-import-pause-complete"))
+
+    def test_generic_base64_ignores_path_like_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("reports/CustomReports/ReportName"))
+
+    def test_generic_base64_ignores_repeated_punctuation(self):
+        self.assertFalse(_should_report_generic_base64("--------------------------------"))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 import os
+import base64
+import binascii
 import re
 import argparse
 import sys
@@ -20,10 +22,18 @@ GENERIC_PATTERNS = {
     "JWT_TOKEN": re.compile(r'["\'](ey[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*)["\']'),
     # Generic long hex strings often used for keys (32+ chars)
     "GENERIC_HEX_32": re.compile(r'["\']([a-fA-F0-9]{32,})["\']'),
-    # Generic Base64 strings (32+ chars) often used for keys/secrets
-    "GENERIC_BASE64_32": re.compile(r'["\']([A-Za-z0-9+/]{32,}={0,2})["\']'),
+    # Generic Base64-like strings often used for keys/secrets.
+    # Final reporting is filtered through heuristics to suppress identifier noise.
+    "GENERIC_BASE64_32": re.compile(r'["\']([A-Za-z0-9+/_-]{24,}={0,2})["\']'),
     "PRIVATE_KEY_BLOCK": re.compile(r'PRIVATE KEY'),
 }
+
+CAMEL_CASE_RE = re.compile(r'^(?:[A-Z][a-z0-9]+)+(?:[A-Z][a-z0-9]+)*$|^[a-z]+(?:[A-Z][a-z0-9]+)+$')
+SNAKE_CASE_RE = re.compile(r'^[A-Za-z]+(?:_[A-Za-z0-9]+)+$')
+UPPER_UNDERSCORE_RE = re.compile(r'^[A-Z0-9]+(?:_[A-Z0-9]+)+$')
+DASH_SEPARATED_RE = re.compile(r'^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$')
+PATH_LIKE_RE = re.compile(r'^[A-Za-z0-9./-]+$')
+REPEATED_PUNCTUATION_RE = re.compile(r'^[-_=+/]{16,}$')
 
 # Exclusion Lists
 WINDOWS_EXCLUDE_DIRS = {"$RECYCLE.BIN", "System Volume Information"}
@@ -97,7 +107,110 @@ def is_text_file(file_path: str) -> bool:
     except Exception:
         return False
 
-def scan_zip_archive(zip_path: str, patterns: Dict[str, re.Pattern]) -> List[Tuple[str, int, str, str]]:
+
+def _is_camel_case_token(value: str) -> bool:
+    return bool(CAMEL_CASE_RE.fullmatch(str(value or "")))
+
+
+def _is_snake_case_token(value: str) -> bool:
+    token = str(value or "")
+    return bool(SNAKE_CASE_RE.fullmatch(token) or UPPER_UNDERSCORE_RE.fullmatch(token))
+
+
+def _is_dash_separated_token(value: str) -> bool:
+    return bool(DASH_SEPARATED_RE.fullmatch(str(value or "")))
+
+
+def _is_path_like_token(value: str) -> bool:
+    token = str(value or "")
+    return "/" in token and bool(PATH_LIKE_RE.fullmatch(token))
+
+
+def _decode_base64_candidate(value: str) -> bytes | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+
+    normalized = token.replace("-", "+").replace("_", "/")
+    remainder = len(normalized) % 4
+    if remainder == 1:
+        return None
+    if remainder:
+        normalized += "=" * (4 - remainder)
+
+    try:
+        return base64.b64decode(normalized, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _should_report_generic_base64(
+    value: str,
+    include_camel_case: bool = False,
+    include_snake_case: bool = False,
+    include_dash_separated: bool = False,
+    include_path_like: bool = False,
+    include_alpha_only: bool = False,
+    min_decoded_bytes: int = 12,
+) -> bool:
+    token = str(value or "").strip()
+    if len(token) < 24:
+        return False
+
+    is_camel = _is_camel_case_token(token)
+    is_snake = _is_snake_case_token(token)
+    is_dash = _is_dash_separated_token(token)
+    is_path_like = _is_path_like_token(token)
+    alpha_only = token.isalpha()
+    has_digit = any(ch.isdigit() for ch in token)
+    has_base64_symbols = any(ch in "+/=_-" for ch in token)
+
+    if REPEATED_PUNCTUATION_RE.fullmatch(token):
+        return False
+
+    if is_camel and not include_camel_case:
+        return False
+    if is_snake and not include_snake_case:
+        return False
+    if is_dash and not include_dash_separated:
+        return False
+    if is_path_like and not include_path_like:
+        return False
+    if alpha_only and not include_alpha_only and not (is_camel and include_camel_case) and not (is_snake and include_snake_case):
+        return False
+    if not has_digit and not has_base64_symbols and not include_alpha_only and not (is_camel and include_camel_case) and not (is_snake and include_snake_case):
+        return False
+    if not has_digit and ("-" in token or "/" in token) and not ("+" in token or "=" in token or "_" in token) and not include_dash_separated and not include_path_like:
+        return False
+
+    decoded = _decode_base64_candidate(token)
+    if decoded is None:
+        return False
+    return len(decoded) >= max(1, int(min_decoded_bytes))
+
+
+def _collect_line_matches(
+    line: str,
+    patterns: Dict[str, re.Pattern],
+    generic_base64_options: Dict[str, Any] | None = None,
+) -> List[Tuple[str, str]]:
+    findings: List[Tuple[str, str]] = []
+    options = generic_base64_options or {}
+
+    for pattern_name, regex in patterns.items():
+        for match in regex.finditer(line):
+            if pattern_name == "GENERIC_BASE64_32":
+                candidate = match.group(1) if match.lastindex else match.group(0).strip("\"'")
+                if not _should_report_generic_base64(candidate, **options):
+                    continue
+            findings.append((pattern_name, match.group(0)))
+    return findings
+
+def scan_zip_archive(
+    zip_path: str,
+    patterns: Dict[str, re.Pattern],
+    generic_base64_options: Dict[str, Any] | None = None,
+) -> List[Tuple[str, int, str, str]]:
     """Scans files inside a zip archive."""
     findings = []
     try:
@@ -122,9 +235,8 @@ def scan_zip_archive(zip_path: str, patterns: Dict[str, re.Pattern]) -> List[Tup
                         text_file = io.TextIOWrapper(f, encoding='utf-8', errors='ignore')
                         for i, line in enumerate(text_file, 1):
                             if len(line) > 500: continue
-                            for pattern_name, regex in patterns.items():
-                                for match in regex.finditer(line):
-                                    findings.append((f"{zip_path}!{member.filename}", i, pattern_name, match.group(0)))
+                            for pattern_name, matched_text in _collect_line_matches(line, patterns, generic_base64_options):
+                                findings.append((f"{zip_path}!{member.filename}", i, pattern_name, matched_text))
                 except Exception:
                     pass
     except Exception:
@@ -198,6 +310,7 @@ def scan_git_history(
     patterns: Dict[str, re.Pattern],
     exclude_dirs: set,
     include_path: str = ".",
+    generic_base64_options: Dict[str, Any] | None = None,
 ) -> List[Tuple[str, int, str, str]]:
     """Scans git history (patches) for sensitive data."""
     findings = []
@@ -229,9 +342,8 @@ def scan_git_history(
                 continue
                 
             content = line[1:]
-            for pattern_name, regex in patterns.items():
-                if regex.search(content):
-                    findings.append((f"COMMIT: {current_commit} ({current_file})", 0, pattern_name, content.strip()[:100]))
+            for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                findings.append((f"COMMIT: {current_commit} ({current_file})", 0, pattern_name, content.strip()[:100]))
                     
         process.wait()
     except Exception as e:
@@ -244,6 +356,7 @@ def scan_git_diff(
     exclude_dirs: set,
     staged: bool = False,
     include_path: str = ".",
+    generic_base64_options: Dict[str, Any] | None = None,
 ) -> List[Tuple[str, int, str, str]]:
     """Scans git diffs (staged or unstaged) for sensitive data."""
     findings = []
@@ -276,9 +389,8 @@ def scan_git_diff(
                     continue
                 content = line[1:]
                 if len(content) > 500: continue
-                for pattern_name, regex in patterns.items():
-                    if regex.search(content):
-                        findings.append((f"DIFF ({diff_type}): {current_file}", 0, pattern_name, content.strip()[:100]))
+                for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                    findings.append((f"DIFF ({diff_type}): {current_file}", 0, pattern_name, content.strip()[:100]))
         process.wait()
     except Exception as e:
         print(f"Error scanning git diff: {e}")
@@ -290,6 +402,7 @@ def scan_git_commit(
     patterns: Dict[str, re.Pattern],
     exclude_dirs: set,
     include_path: str = ".",
+    generic_base64_options: Dict[str, Any] | None = None,
 ) -> List[Tuple[str, int, str, str]]:
     """Scans a specific git commit for sensitive data."""
     findings = []
@@ -315,9 +428,8 @@ def scan_git_commit(
                     continue
                 content = line[1:]
                 if len(content) > 500: continue
-                for pattern_name, regex in patterns.items():
-                    if regex.search(content):
-                        findings.append((f"COMMIT: {commit_hash[:7]} ({current_file})", 0, pattern_name, content.strip()[:100]))
+                for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                    findings.append((f"COMMIT: {commit_hash[:7]} ({current_file})", 0, pattern_name, content.strip()[:100]))
         process.wait()
         if process.returncode != 0:
             stderr_output = process.stderr.read()
@@ -332,6 +444,7 @@ def scan_git_stashes(
     patterns: Dict[str, re.Pattern],
     exclude_dirs: set,
     include_path: str = ".",
+    generic_base64_options: Dict[str, Any] | None = None,
 ) -> List[Tuple[str, int, str, str]]:
     """Scans all git stashes for sensitive data."""
     findings = []
@@ -369,9 +482,8 @@ def scan_git_stashes(
                         continue
                     content = line[1:]
                     if len(content) > 500: continue
-                    for pattern_name, regex in patterns.items():
-                        if regex.search(content):
-                            findings.append((f"STASH: {stash_ref} ({current_file})", 0, pattern_name, content.strip()[:100]))
+                    for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                        findings.append((f"STASH: {stash_ref} ({current_file})", 0, pattern_name, content.strip()[:100]))
             process.wait()
     except Exception as e:
         print(f"Error scanning git stashes: {e}")
@@ -380,13 +492,14 @@ def scan_git_stashes(
 def find_sensitive_data(
     files: List[str],
     all_patterns: Dict[str, re.Pattern],
+    generic_base64_options: Dict[str, Any] | None = None,
 ) -> List[Tuple[str, int, str, str]]:
     """Scans the provided list of files."""
     findings = []
     
     for file_path in files:
         if file_path.lower().endswith('.zip'):
-            findings.extend(scan_zip_archive(file_path, all_patterns))
+            findings.extend(scan_zip_archive(file_path, all_patterns, generic_base64_options=generic_base64_options))
             continue
 
         if not is_text_file(file_path):
@@ -397,12 +510,9 @@ def find_sensitive_data(
                 for i, line in enumerate(f, 1):
                     # Skip minified lines
                     if len(line) > 500: continue
-                        
-                    for pattern_name, regex in all_patterns.items():
-                        for match in regex.finditer(line):
-                            findings.append(
-                                (file_path, i, pattern_name, match.group(0))
-                            )
+
+                    for pattern_name, matched_text in _collect_line_matches(line, all_patterns, generic_base64_options):
+                        findings.append((file_path, i, pattern_name, matched_text))
         except Exception:
             pass
     return findings
@@ -440,6 +550,12 @@ def main():
     # Pattern Control
     parser.add_argument("--no-keyring", action="store_true", help="Disable scanning for secrets from the keyring (enabled by default).")
     parser.add_argument("--no-generic-base64", action="store_true", help="Disable scanning for generic Base64 patterns.")
+    parser.add_argument("--include-camel-case-base64", action="store_true", help="Include CamelCase and PascalCase tokens in generic Base64 matching.")
+    parser.add_argument("--include-snake-case-base64", action="store_true", help="Include snake_case and UPPER_UNDERSCORE tokens in generic Base64 matching.")
+    parser.add_argument("--include-dash-separated-base64", action="store_true", help="Include dash-separated identifier tokens in generic Base64 matching.")
+    parser.add_argument("--include-path-like-base64", action="store_true", help="Include path-like slash-separated tokens in generic Base64 matching.")
+    parser.add_argument("--include-alpha-only-base64", action="store_true", help="Include alphabetic-only tokens in generic Base64 matching.")
+    parser.add_argument("--base64-min-decoded-bytes", type=int, default=12, help="Minimum decoded byte length required for generic Base64 findings.")
     parser.add_argument("--custom-pattern", nargs='+', default=[], help="Define one or more custom regex patterns to scan for.")
 
     # Git Scanning Modes
@@ -448,6 +564,7 @@ def main():
     parser.add_argument("--staged", action="store_true", help="Scan staged git changes.")
     parser.add_argument("--commit", help="Scan a specific git commit hash.")
     parser.add_argument("--git-stash", action="store_true", help="Scan all git stashes.")
+    parser.add_argument("--fail-on-findings", action="store_true", help="Exit with code 1 when findings are detected.")
     args = parser.parse_args()
 
     # --- Build Patterns ---
@@ -466,6 +583,14 @@ def main():
                 print(f"❌ Error compiling custom pattern '{pattern_str}': {e}")
 
     all_patterns = {**GENERIC_PATTERNS, **custom_patterns}
+    generic_base64_options = {
+        "include_camel_case": bool(args.include_camel_case_base64),
+        "include_snake_case": bool(args.include_snake_case_base64),
+        "include_dash_separated": bool(args.include_dash_separated_base64),
+        "include_path_like": bool(args.include_path_like_base64),
+        "include_alpha_only": bool(args.include_alpha_only_base64),
+        "min_decoded_bytes": int(args.base64_min_decoded_bytes),
+    }
 
     if args.no_generic_base64:
         all_patterns.pop("GENERIC_BASE64_32", None)
@@ -502,7 +627,7 @@ def main():
 
     files = _resolve_scan_files(args.path, args.file, use_gitignore=not args.no_gitignore, exclude_dirs=exclude_dirs)
     print(f"Scanning {len(files)} files...")
-    findings.extend(find_sensitive_data(files, all_patterns))
+    findings.extend(find_sensitive_data(files, all_patterns, generic_base64_options=generic_base64_options))
 
     if args.history:
         findings.extend(
@@ -511,6 +636,7 @@ def main():
                 all_patterns,
                 exclude_dirs=exclude_dirs,
                 include_path=args.path,
+                generic_base64_options=generic_base64_options,
             )
         )
 
@@ -522,6 +648,7 @@ def main():
                 exclude_dirs=exclude_dirs,
                 staged=False,
                 include_path=args.path,
+                generic_base64_options=generic_base64_options,
             )
         )
 
@@ -533,6 +660,7 @@ def main():
                 exclude_dirs=exclude_dirs,
                 staged=True,
                 include_path=args.path,
+                generic_base64_options=generic_base64_options,
             )
         )
 
@@ -544,6 +672,7 @@ def main():
                 all_patterns,
                 exclude_dirs=exclude_dirs,
                 include_path=args.path,
+                generic_base64_options=generic_base64_options,
             )
         )
 
@@ -554,6 +683,7 @@ def main():
                 all_patterns,
                 exclude_dirs=exclude_dirs,
                 include_path=args.path,
+                generic_base64_options=generic_base64_options,
             )
         )
 
@@ -563,6 +693,8 @@ def main():
         for location, line_num, pattern, match in findings:
             loc_str = f"{location}:{line_num}" if line_num > 0 else location
             print(f"  - {loc_str} [{pattern}]\n    Match: {match[:60]}...")
+        if args.fail_on_findings:
+            return 1
     else:
         print("\nNo sensitive data found.")
 
@@ -571,6 +703,8 @@ def main():
     if not git_scans_performed:
         print("\nℹ️  Tip: To scan git history, use --history, --diff, --staged, --commit <hash>, or --git-stash.")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

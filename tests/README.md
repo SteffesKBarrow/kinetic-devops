@@ -93,7 +93,7 @@ chmod +x scripts/hooks/pre-commit
 git config core.hooksPath scripts/hooks
 ```
 
-The pre-commit hook will automatically run the test suite before allowing commits.
+The pre-commit hook will automatically run the sensitive-data gate and test suite before allowing commits.
 
 ## Environment Validation
 

@@ -31,6 +31,17 @@ from pathlib import Path
 
 SETTINGS_SERVICE = "kinetic-devops-settings"
 NOREPLY_ACCOUNT = "github-noreply-email"
+SENSITIVE_SCAN_EXCLUDES = (
+    "kinetic_devops/find_sensitive_data.py",
+    "tests/test_sensitive_data_scan_exclusions.py",
+)
+COMPANY_CODE_GROUPS = (
+    ("S", "O", "L"),
+    ("E", "S", "V"),
+    ("N", "C", "O"),
+    ("M", "E", "T"),
+    ("E", "T", "S"),
+)
 
 # --- UTILITIES ---
 
@@ -41,6 +52,15 @@ def is_dry_run() -> bool:
         return True
 
     env_value = str(os.getenv("PRE_COMMIT_DRY_RUN", "")).strip().lower()
+    return env_value in {"1", "true", "yes", "on"}
+
+
+def is_remote_scan_only() -> bool:
+    args = set(sys.argv[1:])
+    if "--remote-scan-only" in args:
+        return True
+
+    env_value = str(os.getenv("KD_REMOTE_SENSITIVE_SCAN", "")).strip().lower()
     return env_value in {"1", "true", "yes", "on"}
 
 def strip_comments(content):
@@ -173,6 +193,47 @@ def ensure_public_email_privacy() -> int:
         return 1
 
     print(f"🔒 PRE-COMMIT: Set local git user.email to GitHub noreply ({candidate}).")
+    return 0
+
+
+def _company_token_pattern() -> str:
+    codes = "|".join("".join(chars) for chars in COMPANY_CODE_GROUPS)
+    return rf"(?<![A-Za-z0-9_])({codes})(?![A-Za-z0-9_])"
+
+
+def run_sensitive_data_gate(repo_root, remote_scan=False):
+    """Run the sensitive-data scanner in blocking mode."""
+    if _env_true("KD_SKIP_SENSITIVE_SCAN"):
+        print("⚠️  PRE-COMMIT: Skipping sensitive data gate (KD_SKIP_SENSITIVE_SCAN=1).")
+        return 0
+
+    mode_label = "remote history" if remote_scan else "staged content"
+    print("=" * 70)
+    print(f"  PRE-COMMIT: Running sensitive data gate ({mode_label})...")
+    print("=" * 70)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "kinetic_devops.find_sensitive_data",
+        "--path",
+        ".",
+        "--no-generic-base64",
+        "--fail-on-findings",
+        "--custom-pattern",
+        _company_token_pattern(),
+        "--exclude",
+        *SENSITIVE_SCAN_EXCLUDES,
+    ]
+    if remote_scan:
+        cmd.extend(["--no-keyring", "--history"])
+    else:
+        cmd.append("--staged")
+
+    result = subprocess.run(cmd, cwd=str(repo_root), capture_output=False)
+    if result.returncode != 0:
+        print("❌ PRE-COMMIT: Sensitive data gate failed. Commit rejected.")
+        return 1
     return 0
 
 # --- CHECK 1: TEST SUITE ---
@@ -345,12 +406,19 @@ def main():
         print(f"Repository root: {repo_root}")
         print("Checks that would run:")
         print("0. Public GitHub email privacy guard (auto-set noreply by default, cached in keyring)")
-        print("1. SDK test suite via kinetic_devops.cli.test_runner")
-        print("2. Stringified JSON validation on staged .json/.jsonc files")
-        print("3. .content sync validation for staged JSON artifacts")
-        print("4. Index sequencing validation for staged JSON artifacts")
+        print("1. Sensitive data gate via kinetic_devops.find_sensitive_data")
+        print("2. SDK test suite via kinetic_devops.cli.test_runner")
+        print("3. Stringified JSON validation on staged .json/.jsonc files")
+        print("4. .content sync validation for staged JSON artifacts")
+        print("5. Index sequencing validation for staged JSON artifacts")
         print(f"Staged files: {len(files)} total, {len(json_files)} json/jsonc")
         print("DRY RUN RESULT: PASS")
+        sys.exit(0)
+
+    if is_remote_scan_only():
+        if run_sensitive_data_gate(repo_root, remote_scan=True) != 0:
+            sys.exit(1)
+        print("PRE-COMMIT: Remote sensitive data gate passed.")
         sys.exit(0)
 
     # 0. Enforce public commit email privacy defaults.
@@ -358,7 +426,11 @@ def main():
         print("❌ PRE-COMMIT: Email privacy check failed. Commit rejected.")
         sys.exit(1)
 
-    # 1. Run Tests
+    # 1. Run sensitive data gate against staged content.
+    if run_sensitive_data_gate(repo_root, remote_scan=False) != 0:
+        sys.exit(1)
+
+    # 2. Run Tests
     if run_tests(repo_root) != 0:
         print("❌ PRE-COMMIT: Tests failed. Commit rejected.")
         sys.exit(1)

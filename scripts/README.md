@@ -61,7 +61,7 @@ Copy-Item scripts\hooks\pre-commit .git\hooks\pre-commit
 git config core.hooksPath scripts/hooks
 ```
 
-The hook runs `python -m tests.test_runner` before each commit.
+The hook runs a blocking sensitive-data scan on staged content and then `python -m tests.test_runner` before each commit.
 
 ## Branch Protection Automation (GitHub + Forgejo)
 

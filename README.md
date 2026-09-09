@@ -10,7 +10,7 @@
 - 🔄 **Multi-environment support** — Seamlessly switch between Dev/Test/Prod
 - 🛠️ **Ready-to-use Service Clients** — High-level clients for BAQ, BOReader, Reports, Tax, and more, built on a robust base client with wire logging and data redaction.
 - 🚀 **Extensible Project Templates** — A "batteries-included" project structure with auto-discovery for creating your own reusable functions, layers, and scheduled jobs.
-- 🤖 **CI/CD Ready** — Designed for automation with environment variable support, programmatic APIs, and pre-commit hooks for local validation.
+- 🤖 **CI/CD Ready** — Designed for automation with environment variable support, programmatic APIs, blocking sensitive-data gates, and pre-commit hooks for local validation.
 - 📜 **Powerful CLI Tools** — Includes helper scripts for environment initialization, health validation, and common administrative tasks like configuration syncing.
 - 🧩 **Layer Lifecycle Operations** — Native MetaFX support for core layer import/delete operations (`ImportLayers` / `BulkDeleteLayers`) with structured error reports.
 - 🤖 **CI/CD ready** — Environment variables, programmatic API, pre-commit hooks

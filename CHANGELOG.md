@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a6] - 2026-09-09
+
+**Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
+
+### Added
+- Native Access Scope `.eas` export support and `.eas` artifact normalization for comparison against live environments.
+- Blocking sensitive-data gating in the local pre-commit hook and CI workflow, including remote-history scanning support.
+- User-adjustable generic Base64 risk profile flags to opt into CamelCase, snake_case, dash-separated, path-like, or alpha-only candidate detection.
+
+### Changed
+- Access Scope validation and refresh/import workflows now accept normalized `.eas` packages directly as reference artifacts.
+- Generic Base64 scanning now requires a successful decode and suppresses common identifier-shaped false positives by default.
+
+### Fixed
+- Access Scope migrate and refresh-import key verification now use company-qualified API key lookups.
+- API key rebind operations now refresh current rows before `UpdateExt`, preventing stale `SysRevID` no-op failures.
+- Commit and CI gating now fail when sensitive-data findings are detected instead of only printing advisory output.
+
+## [0.1.0a5] - 2026-04-12
+
+**Status: ⚠️ ALPHA** — Early development.
+
+### Changed
+- Refactored and consolidated authentication utilities into `kinetic_devops.auth` to improve credential lifecycle management.
+- Standardized auth-related error handling across `KineticBaseClient` and service modules.
+- Hardened Solution Workbench and MetaUI layer logic for more reproducible migration behavior.
+
 ## [0.1.0a4] - 2026-04-10
 
 **Status: ⚠️ ALPHA** — Early development. API and features may change significantly.
