@@ -154,6 +154,7 @@ class KineticMetafetcher(KineticBaseClient):
             text = (resp.text or "").strip()
             return text[:4000] + "...<truncated>" if len(text) > 4000 else text
 
+
     def _load_jsonc_file(self, path: str) -> Any:
         """Load JSON or JSONC payloads from exported dump files.
 
@@ -420,6 +421,7 @@ def main():
     layers_parser.add_argument("--timeout", type=int, default=120)
     layers_parser.add_argument("--dry-run", action="store_true")
     layers_parser.add_argument("--report", default="")
+
 
     args = parser.parse_args()
 

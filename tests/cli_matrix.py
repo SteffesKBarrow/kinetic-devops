@@ -1,6 +1,7 @@
 """Shared CLI entrypoint matrix for regression tests."""
 
 CLI_MODULES = [
+    {"module": "access_scope", "script": "access_scope.py", "router": "scope"},
     {"module": "analysis", "script": "analysis.py", "router": "analysis"},
     {"module": "auth", "script": "auth.py", "router": "auth"},
     {"module": "baq", "script": "baq.py", "router": "baq"},

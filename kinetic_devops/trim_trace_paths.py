@@ -5,6 +5,7 @@ Examples:
   python trim_trace_paths.py UseExistingSN.json --preset kinetic-heavy --in-place
   python trim_trace_paths.py "*.json" --drop "*.request.headers.Authorization" --out-dir reduced
   python trim_trace_paths.py dump.json --rules-file rules.txt --pretty
+    python trim_trace_paths.py dump.json --delta-mode summary --delta-format jsonc
 """
 
 from __future__ import annotations
@@ -161,6 +162,9 @@ PRESETS: dict[str, list[str]] = {
         "*.response.headers.*",
     ],
 }
+
+DELTA_MODES = ["off", "summary", "annotated"]
+DELTA_FORMATS = ["jsonl", "jsonc", "both"]
 
 
 @dataclass
@@ -333,6 +337,35 @@ def parse_args() -> argparse.Namespace:
             "Attempt light JSON repair on parse failure (BOM/control chars, trailing commas, "
             "missing object values). Default: on."
         ),
+    )
+    parser.add_argument(
+        "--delta-mode",
+        choices=DELTA_MODES,
+        default="off",
+        help="Generate delta sidecar output alongside the reduced JSON (default: off).",
+    )
+    parser.add_argument(
+        "--delta-format",
+        choices=DELTA_FORMATS,
+        default="jsonc",
+        help="Delta sidecar format: jsonl, jsonc, or both (default: jsonc).",
+    )
+    parser.add_argument(
+        "--delta-out-dir",
+        default="delta",
+        help="Output directory for delta sidecars (default: delta).",
+    )
+    parser.add_argument(
+        "--delta-max-value-len",
+        type=int,
+        default=200,
+        help="Maximum rendered value length when delta redaction is disabled (default: 200).",
+    )
+    parser.add_argument(
+        "--delta-redact-values",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Redact delta old/new values by default; use --no-delta-redact-values to expose truncated values.",
     )
     return parser.parse_args()
 
@@ -1075,6 +1108,253 @@ def format_transparency(stats: Stats, show_samples: int, show_top_rules: int) ->
     return "\n".join(lines)
 
 
+def _delta_relative_dir(src: Path) -> Path:
+    parts = src.parts[1:] if src.is_absolute() else src.parts
+    if len(parts) <= 1:
+        return Path()
+    return Path(*parts[:-1])
+
+
+def _delta_output_paths(src: Path, delta_out_dir: str, delta_mode: str, delta_format: str) -> list[Path]:
+    base_dir = Path(delta_out_dir) / _delta_relative_dir(src)
+    base_name = f"{src.stem}.delta.{delta_mode}"
+    formats = ["jsonl", "jsonc"] if delta_format == "both" else [delta_format]
+    return [base_dir / f"{base_name}.{fmt}" for fmt in formats]
+
+
+def _delta_join_path(parent: str, segment: str) -> str:
+    if not parent:
+        return segment
+    if segment.startswith("["):
+        return f"{parent}{segment}"
+    return f"{parent}.{segment}"
+
+
+def _delta_format_scalar(value: Any, redact_values: bool, max_len: int) -> Any:
+    if value is None or isinstance(value, bool):
+        return value
+
+    if redact_values:
+        if isinstance(value, (int, float)):
+            return "[REDACTED_NUMBER]"
+        if isinstance(value, str):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return f"[REDACTED_OBJECT keys={len(value)}]"
+        if isinstance(value, list):
+            return f"[REDACTED_ARRAY items={len(value)}]"
+        return "[REDACTED]"
+
+    if isinstance(value, str):
+        if len(value) <= max_len:
+            return value
+        return value[:max_len] + "...[truncated]"
+
+    if isinstance(value, (dict, list)):
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        if len(rendered) <= max_len:
+            return rendered
+        return rendered[:max_len] + "...[truncated]"
+
+    return value
+
+
+def _delta_rule_for_path(path: str, stats: Stats) -> str | None:
+    best_rule: str | None = None
+    best_len = -1
+    for recorded_path, rule in stats.removed_paths or []:
+        if recorded_path == path or recorded_path.startswith(path) or path.startswith(recorded_path):
+            candidate_len = len(recorded_path)
+            if candidate_len > best_len:
+                best_len = candidate_len
+                best_rule = rule
+    return best_rule
+
+
+def _delta_emit_event(
+    events: list[dict[str, Any]],
+    op: str,
+    path: str,
+    old: Any,
+    new: Any,
+    stats: Stats,
+    redact_values: bool,
+    max_value_len: int,
+) -> None:
+    event: dict[str, Any] = {
+        "op": op,
+        "path": path or "(root)",
+        "old": _delta_format_scalar(old, redact_values, max_value_len) if op in {"remove", "modify"} else None,
+        "new": _delta_format_scalar(new, redact_values, max_value_len) if op in {"add", "modify"} else None,
+    }
+    rule = _delta_rule_for_path(path, stats)
+    if rule is not None:
+        event["rule"] = rule
+    events.append(event)
+
+
+def build_delta_events(
+    before: Any,
+    after: Any,
+    stats: Stats,
+    redact_values: bool,
+    max_value_len: int,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+
+    def walk(old: Any, new: Any, path: str) -> None:
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in sorted(set(old) | set(new)):
+                child_path = _delta_join_path(path, str(key))
+                if key not in new:
+                    _delta_emit_event(events, "remove", child_path, old[key], None, stats, redact_values, max_value_len)
+                    continue
+                if key not in old:
+                    _delta_emit_event(events, "add", child_path, None, new[key], stats, redact_values, max_value_len)
+                    continue
+                walk(old[key], new[key], child_path)
+            return
+
+        if isinstance(old, list) and isinstance(new, list):
+            limit = max(len(old), len(new))
+            for idx in range(limit):
+                child_path = f"{path}[{idx}]" if path else f"[{idx}]"
+                if idx >= len(new):
+                    _delta_emit_event(events, "remove", child_path, old[idx], None, stats, redact_values, max_value_len)
+                    continue
+                if idx >= len(old):
+                    _delta_emit_event(events, "add", child_path, None, new[idx], stats, redact_values, max_value_len)
+                    continue
+                walk(old[idx], new[idx], child_path)
+            return
+
+        if old != new:
+            _delta_emit_event(events, "modify", path, old, new, stats, redact_values, max_value_len)
+
+    walk(before, after, "")
+    return events
+
+
+def build_delta_summary(events: list[dict[str, Any]], src: Path, dst: Path, delta_mode: str) -> dict[str, Any]:
+    op_counts = Counter(event["op"] for event in events)
+    path_counts: Counter[str] = Counter()
+    for event in events:
+        path_counts[str(event.get("path") or "(root)")] += 1
+
+    top_changed_paths = [
+        {"path": path, "count": count}
+        for path, count in sorted(path_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+    ]
+
+    return {
+        "type": "delta-summary",
+        "mode": delta_mode,
+        "source": str(src),
+        "target": str(dst),
+        "added": op_counts.get("add", 0),
+        "removed": op_counts.get("remove", 0),
+        "modified": op_counts.get("modify", 0),
+        "top_changed_paths": top_changed_paths,
+    }
+
+
+def _jsonc_value(value: Any, indent: int = 0) -> str:
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        child_indent = " " * (indent + 2)
+        inner = ",\n".join(f"{child_indent}{_jsonc_value(item, indent + 2)}" for item in value)
+        return f"[\n{inner}\n{' ' * indent}]"
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        child_indent = " " * (indent + 2)
+        parts = []
+        for key in sorted(value):
+            parts.append(f"{child_indent}{json.dumps(str(key), ensure_ascii=False)}: {_jsonc_value(value[key], indent + 2)}")
+        return f"{{\n{',\n'.join(parts)}\n{' ' * indent}}}"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def render_delta_jsonc(summary: dict[str, Any], events: list[dict[str, Any]], delta_mode: str) -> str:
+    lines: list[str] = [
+        f"// trace delta sidecar ({delta_mode})",
+        f"// source: {summary.get('source', '')}",
+        f"// target: {summary.get('target', '')}",
+    ]
+    if delta_mode == "summary":
+        payload = dict(summary)
+    else:
+        payload = dict(summary)
+        payload["events"] = events
+        lines.append(f"// events: {len(events)}")
+        for event in events:
+            lines.append(f"// {event['op']} {event['path']}")
+            if event.get("rule"):
+                lines.append(f"// rule: {event['rule']}")
+            if event.get("old") is not None:
+                lines.append(f"// old: {_jsonc_value(event['old'])}")
+            if event.get("new") is not None:
+                lines.append(f"// new: {_jsonc_value(event['new'])}")
+    lines.append(_jsonc_value(payload, 0))
+    return "\n".join(lines) + "\n"
+
+
+def render_delta_jsonl(summary: dict[str, Any], events: list[dict[str, Any]], delta_mode: str) -> str:
+    lines = [json.dumps(summary, ensure_ascii=False, sort_keys=True)]
+    if delta_mode == "annotated":
+        lines.extend(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in events)
+    return "\n".join(lines) + "\n"
+
+
+def write_delta_sidecars(
+    src: Path,
+    dst: Path,
+    before: Any,
+    after: Any,
+    stats: Stats,
+    delta_mode: str,
+    delta_format: str,
+    delta_out_dir: str,
+    delta_redact_values: bool,
+    delta_max_value_len: int,
+    dry_run: bool,
+) -> list[Path]:
+    if delta_mode == "off":
+        return []
+
+    events = build_delta_events(before, after, stats, delta_redact_values, delta_max_value_len)
+    summary = build_delta_summary(events, src, dst, delta_mode)
+    output_paths = _delta_output_paths(src, delta_out_dir, delta_mode, delta_format)
+    rendered_outputs: dict[str, str] = {}
+
+    if delta_format in {"jsonl", "both"}:
+        rendered_outputs["jsonl"] = render_delta_jsonl(summary, events, delta_mode)
+    if delta_format in {"jsonc", "both"}:
+        rendered_outputs["jsonc"] = render_delta_jsonc(summary, events, delta_mode)
+
+    written_paths: list[Path] = []
+    for output_path in output_paths:
+        out_format = output_path.suffix.lstrip(".")
+        content = rendered_outputs.get(out_format)
+        if content is None:
+            continue
+        if not dry_run:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(content, encoding="utf-8")
+        written_paths.append(output_path)
+
+    return written_paths
+
+
 def process_file(
     src: Path,
     drop_patterns: list[str],
@@ -1099,6 +1379,11 @@ def process_file(
     sample_size: int,
     sample_include_patterns: list[str],
     sample_exclude_patterns: list[str],
+    delta_mode: str,
+    delta_format: str,
+    delta_out_dir: str,
+    delta_max_value_len: int,
+    delta_redact_values: bool,
 ) -> tuple[bool, str, str]:
     try:
         raw = src.read_text(encoding="utf-8")
@@ -1112,6 +1397,7 @@ def process_file(
     stats = Stats()
     setattr(stats, "redact_mode", redact_mode)
     setattr(stats, "call_context_policy", call_context_policy)
+    original_data = copy.deepcopy(data) if delta_mode != "off" else None
     data = prune_trace_tree(
         data,
         "",
@@ -1147,13 +1433,29 @@ def process_file(
     else:
         out_text = json.dumps(trimmed, ensure_ascii=False, separators=(",", ":"))
 
+    dst = target_path(src, in_place, out_dir, suffix)
+    delta_paths: list[Path] = []
+    if delta_mode != "off" and original_data is not None:
+        delta_paths = write_delta_sidecars(
+            src=src,
+            dst=dst,
+            before=original_data,
+            after=trimmed,
+            stats=stats,
+            delta_mode=delta_mode,
+            delta_format=delta_format,
+            delta_out_dir=delta_out_dir,
+            delta_redact_values=delta_redact_values,
+            delta_max_value_len=delta_max_value_len,
+            dry_run=dry_run,
+        )
+
     before = len(raw.encode("utf-8"))
     after = len(out_text.encode("utf-8"))
     pct = 0.0 if before == 0 else (1.0 - (after / before)) * 100.0
     backup_msg = ""
 
     if not dry_run:
-        dst = target_path(src, in_place, out_dir, suffix)
         if in_place and not no_backup:
             backup = make_backup(src)
             backup_msg = f" | backup={backup}"
@@ -1172,6 +1474,9 @@ def process_file(
             summary += f" | sample-include={len(sample_include_patterns)}"
         if sample_exclude_patterns:
             summary += f" | sample-exclude={len(sample_exclude_patterns)}"
+    if delta_mode != "off":
+        delta_desc = ", ".join(str(path) for path in delta_paths) if delta_paths else "(dry-run)"
+        summary += f" | delta={delta_mode}:{delta_format} -> {delta_desc}"
     if repair_note:
         summary += f" | repaired-json={repair_note}"
     summary += backup_msg
@@ -1261,6 +1566,11 @@ def main() -> int:
             sample_size=args.sample_size,
             sample_include_patterns=args.sample_include,
             sample_exclude_patterns=args.sample_exclude,
+            delta_mode=args.delta_mode,
+            delta_format=args.delta_format,
+            delta_out_dir=args.delta_out_dir,
+            delta_max_value_len=args.delta_max_value_len,
+            delta_redact_values=args.delta_redact_values,
         )
         if detail:
             print(detail)

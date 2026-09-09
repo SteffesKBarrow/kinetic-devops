@@ -13,6 +13,8 @@ from pathlib import Path
 PACKAGE_MODULE_MATRIX = {
     "__init__",
     "__main__",
+    "access_scope",
+    "artifact_validation",
     "analysis",
     "auth",
     "baq",

@@ -241,6 +241,22 @@ python scripts/pull_api_store.py --surface methods --service <SERVICE>
 python -m kinetic_devops meta --env <ENV> --user <USER> layers "C:/Users/<you>/Downloads/dump (5).json" "C:/Users/<you>/Downloads/dump (6).json"
 python -m kinetic_devops meta --env <ENV> --user <USER> layers dump5.json dump6.json --ops import
 python -m kinetic_devops meta --env <ENV> --user <USER> layers dump5.json dump6.json --dry-run
+
+# Trim trace files and generate a delta sidecar for review
+python kinetic_devops/trim_trace_paths.py trace.json --drop "*.request.headers.Authorization" --delta-mode summary --delta-format jsonc
+python kinetic_devops/trim_trace_paths.py trace.json --drop "*.request.headers.Authorization" --delta-mode annotated --delta-format both --no-delta-redact-values
+
+# Migrate API key access scope from one instance to another (direct remap)
+python -m kinetic_devops scope --source-env Pilot --target-env Third --from-scope LEGACY_SCOPE --to-scope NEW_SCOPE
+
+# Detach scope first, run fresh export/import, then rebind and verify (only needed when the scope is already in use)
+python -m kinetic_devops scope --source-env Third --target-env Prod --from-scope PREIMPORT_SCOPE --to-scope PROD_SCOPE --strategy detach-rebind --pause-for-import
+
+# First-class validation: compare target scope definition against production/reference env
+python -m kinetic_devops scope validate --scope-id HeadlessMES --reference-env Pilot --target-env Third --report exports/System-Apps/AccessScopeMigr/HeadlessMES_scope_functional_compare.json
+
+# Validate target against a saved production artifact and keep exit success on known drift
+python -m kinetic_devops scope validate --scope-id HeadlessMES --reference-artifact exports/System-Apps/AccessScopeMigr/HeadlessMES_pilot_snapshot.json --target-env Third --allow-drift
 ```
 
 ### pull_tax_configs.py options:

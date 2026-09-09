@@ -15,6 +15,7 @@ from .find_sensitive_data import main as find_sensitive_data_main
 from .report_service import main as report_main
 from .analysis import main as analysis_main
 from .repomaker.__main__ import main as repomaker_main
+from .access_scope import main as access_scope_main
 import importlib.metadata
 
 
@@ -30,6 +31,7 @@ TOOLS: dict[str, Callable[[], None]] = {
     "report": report_main,
     "analysis": analysis_main,
     "repomaker": repomaker_main,
+    "scope": access_scope_main,
 }
 
 
@@ -172,6 +174,7 @@ def _build_parser(version: str) -> argparse.ArgumentParser:
     subparsers.add_parser("report", help="Upload and Extract Reports")
     subparsers.add_parser("analysis", help="Run local AI and metadata-only analysis workflows")
     subparsers.add_parser("repomaker", help="RepoMaker modular tools (apply/reposmith/smoke)")
+    subparsers.add_parser("scope", help="Access scope and API key migration operations")
     return parser
 
 
