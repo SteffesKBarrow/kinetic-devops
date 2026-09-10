@@ -17,15 +17,15 @@ A change is "Done" only when all Required Now gates pass and any deferred items 
 - At least one regression test is added for each bug fix that changed behavior.
 - Entrypoint and routing changes must include regression coverage for:
 	- top-level router behavior
-	- independently runnable submodules (`python -m kinetic_devops.<module>`)
+	- independently runnable submodules (`uv run python -m kinetic_devops.<module>`)
 	- warning regressions (for example, RuntimeWarning reintroduction)
 - New tests must run in CI-compatible non-interactive mode.
 
 ### 3. Packaging and Installability
 - Package builds successfully as both sdist and wheel.
 - Distribution metadata validates via twine check.
-- Console entry point is verified (`kinetic-devops`).
-- Module entry point is verified (`python -m kinetic_devops`).
+- Console entry point is verified (`uv run kinetic-devops`).
+- Module entry point is verified (`uv run python -m kinetic_devops`).
 
 ### 4. CI/CD Baseline
 - GitHub Actions build pipeline runs successfully for release tags.
@@ -72,18 +72,18 @@ These are high-value and low-friction additions:
 
 ```bash
 # full local validation
-python scripts/validate.py
+uv run python -m tests.test_runner --validate
 
 # targeted and full tests
-python -m unittest tests.test_entry_router tests.test_cli
-python -m tests.test_runner
+uv run python -m unittest tests.test_entry_router tests.test_cli
+uv run python -m tests.test_runner
 
 # packaging checks
 uv build
 uvx twine check dist/*
 
 # entrypoint smoke
-python -m kinetic_devops --help
+uv run python -m kinetic_devops --help
 uv run kinetic-devops --help
 
 # optional (machine-global PATH check, non-blocking)

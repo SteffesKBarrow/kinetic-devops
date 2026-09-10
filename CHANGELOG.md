@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Access Scope migrate and refresh-import key verification now use company-qualified API key lookups.
 - API key rebind operations now refresh current rows before `UpdateExt`, preventing stale `SysRevID` no-op failures.
 - Commit and CI gating now fail when sensitive-data findings are detected instead of only printing advisory output.
-
 ## [0.1.0a5] - 2026-04-12
 
 **Status: ⚠️ ALPHA** — Early development.
