@@ -149,9 +149,12 @@ def main():
             except Exception:
                 pass
         else:
-            # Unix-like: User can source $(python script.py)
-            for cmd in commands:
-                print(cmd)
+            # Unix-like: write exports to a temp file and emit its path.
+            sh_path = env_manager.root_dir / "env_vars_tmp.sh"
+            with open(sh_path, "w", encoding="utf-8") as sf:
+                for cmd in commands:
+                    sf.write(f"{cmd}\n")
+            print(f"WRITTEN_SH: {sh_path}")
                 
     except Exception as e:
         print(f"PYTHON CRASH: {e}", file=sys.stderr)

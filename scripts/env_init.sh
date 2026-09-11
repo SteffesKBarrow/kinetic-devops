@@ -36,7 +36,17 @@ if [ -d "$VENV_PATH" ]; then
     . "$VENV_PATH/bin/activate"
 fi
 
-# Execute Python and evaluate exports
-eval "$(python3 scripts/env_init.py ${ENV_NAME:-dev} $SET_API_FLAG)"
+# Execute Python, source generated export file, then clean it up
+INIT_OUTPUT="$(python3 scripts/env_init.py "${ENV_NAME:-dev}" $SET_API_FLAG)" || return 1 2>/dev/null || exit 1
+ENV_FILE="$(printf '%s\n' "$INIT_OUTPUT" | sed -n 's/^WRITTEN_SH: //p' | tail -n 1)"
+
+if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
+    echo "🚨 ERROR: Initialization file was not created."
+    [ -n "$INIT_OUTPUT" ] && printf '%s\n' "$INIT_OUTPUT"
+    return 1 2>/dev/null || exit 1
+fi
+
+. "$ENV_FILE"
+rm -f "$ENV_FILE"
 
 echo "✅ Environment initialized."
