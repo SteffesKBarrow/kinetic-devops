@@ -11,10 +11,11 @@ scripts\env_init.bat [env-name]
 ```
 
 This activates a Python venv (if present) and sets:
-- `KIN_URL`, `KIN_COMPANY`, `KIN_ENV_NAME`, `KIN_API_KEY` (Kinetic connection vars)
+- `KIN_COMPANY`, `KIN_ENV_NAME` (script context vars)
+- `KINETIC_TAXCONFIG_DB` (SQLite config location)
 - `PYTHONPATH` (points to repo root so scripts can import `kinetic_devops`)
 
-The script generates and executes `env_vars_tmp.bat`, then securely erases it.
+The script generates and executes a randomized temp `.bat` file under your OS temp directory, then securely erases it.
 
 ### Windows (PowerShell):
 
@@ -348,5 +349,5 @@ Default `--ops import` behavior is deployment mode: delete first, then import.
 ## Notes
 
 - `PYTHONPATH` is set during environment initialization, enabling imports from the repository root.
-- Temporary env files (`env_vars_tmp.bat`, `env_vars_tmp.ps1`) are securely wiped after use.
+- Temporary env files are randomized under the OS temp directory and securely wiped after use.
 - The `pull_tax_configs.py` script uses stored Kinetic configuration from the keyring to authenticate.

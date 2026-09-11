@@ -125,12 +125,23 @@ class KineticConfigManager(KineticCore):
                 return k, v
         return None, None
 
-    def _get_token_key(self, nickname: str, user_id: str, api_key: str) -> str:
-        """Generates a unique identifier: Nickname-UserID-Hash(API+User)."""
-        # Incorporating the UserID and API Key into the hash ensures total isolation
-        secret_context = f"{api_key}{user_id.lower()}"
-        key_hash = hashlib.sha256(secret_context.encode()).hexdigest()[:12]
-        return f"{nickname}-{user_id.lower()}-{key_hash}"
+    def _get_token_key(self, nickname: str, user_id: str, api_key: str, base_url: str = "") -> str:
+        """Derive a keyring namespace for a specific environment/user credential.
+
+        This is not a secret, password hash, or credential verifier. It is a
+        deterministic keyring namespace used only to isolate cached bearer-token
+        records per environment, user, and API credential. Including the base URL
+        and API key ensures a rotated key or a different Epicor server does not
+        resolve the prior session slot, while the 12-character SHA-256 suffix
+        gives a 48-bit namespace (enough for uniqueness without exposing the
+        underlying secret in the slot name).
+        """
+        # Keep slot derivation aligned with existing persisted keyring records.
+        # `base_url` is accepted for API compatibility but intentionally unused.
+        user = str(user_id or "").lower()
+        secret_context = f"{api_key}{user}"
+        key_hash = hashlib.sha256(secret_context.encode("utf-8")).hexdigest()[:12]
+        return f"{nickname}-{user}-{key_hash}"
 
     def _list_slots_for_env(self, nickname: str) -> list:
         """Generates all possible token slots for a given environment."""
@@ -138,8 +149,8 @@ class KineticConfigManager(KineticCore):
         name, cfg = self._find_env(servers, nickname)
         if not cfg:
             return []
-        
-        # Generate slots for all known sessions in this environment
+
+        # Generate slots for all known sessions in this environment.
         slots = []
         for user in cfg.get("sessions", []):
             slot = self._get_token_key(name, user, cfg['api_key'])
@@ -491,14 +502,11 @@ class KineticConfigManager(KineticCore):
             return
 
         # Map results for display
-        url, token, api_key, company, nickname = config_data
+        _url, _token, _api_key, company, nickname = config_data
 
         # 3. Print environment variables for the shell
         print(f"\n# Active Session: {nickname} (Co: {company})")
-        self._print_env_var("KIN_URL", url)
         self._print_env_var("KIN_COMPANY", company)
-        self._print_env_var("KIN_API_KEY", api_key)
-        self._print_env_var("KIN_TOKEN", token)
 
     def prompt_for_env(self, passive: bool = False, prompt_reuse: bool = False) -> Tuple[str, str, str]:
         # 1. GLOBAL QUICK-CONNECT: Check the last session touched by ANY tool
@@ -810,8 +818,27 @@ class KineticConfigManager(KineticCore):
         }
         try:
             resp = requests.post(auth_url, headers=primary_headers, data='', timeout=15)
+            primary_status = resp.status_code
+            primary_body = (resp.text or "")[:220]
+
             if resp.status_code in (400, 401, 403):
-                resp = requests.post(auth_url, headers=legacy_headers, data='', timeout=15)
+                legacy_resp = requests.post(auth_url, headers=legacy_headers, data='', timeout=15)
+                legacy_status = legacy_resp.status_code
+                legacy_body = (legacy_resp.text or "")[:220]
+
+                if not legacy_resp.ok:
+                    detail_text = " ".join([primary_body, legacy_body]).lower()
+                    if "invalid api key" in detail_text:
+                        raise RuntimeError(
+                            "Token endpoint rejected the API key. Update the environment API key "
+                            "or verify its company scope for this tenant."
+                        )
+                    if primary_status == 401 or legacy_status == 401:
+                        raise RuntimeError(
+                            "Token endpoint rejected credentials (401). Verify Epicor user ID/password "
+                            "and ensure the account is allowed for this environment."
+                        )
+                resp = legacy_resp
             resp.raise_for_status()
             res = resp.json()
 

@@ -45,38 +45,53 @@ echo 🔑 Target: !ENV_NAME!
 set "TAXCONFIG_ARG="
 if not "!TAXCONFIG_DB!"=="" set "TAXCONFIG_ARG=--taxconfig-db=!TAXCONFIG_DB!"
 
-python scripts/env_init.py !ENV_NAME! !TAXCONFIG_ARG! %*
+set "ENV_BAT_FILE="
+set "ENV_PS1_FILE="
+
+for /f "usebackq tokens=1,* delims==" %%A in (`python scripts/env_init.py !ENV_NAME! !TAXCONFIG_ARG! %*`) do (
+    if /I "%%A"=="WRITTEN_TO" set "ENV_BAT_FILE=%%B"
+    if /I "%%A"=="WRITTEN_PS1" set "ENV_PS1_FILE=%%B"
+)
 
 :: 6. THE HAND-OFF (The "Use" Phase)
 :: This is where the variables move from the FILE to the CMD SESSION
-if exist env_vars_tmp.bat (
-    call env_vars_tmp.bat
-) else (
+if "!ENV_BAT_FILE!"=="" (
     echo 🚨 ERROR: Initialization file was not created.
     exit /b 1
 )
+if not exist "!ENV_BAT_FILE!" (
+    echo 🚨 ERROR: Initialization file is missing: !ENV_BAT_FILE!
+    exit /b 1
+)
+call "!ENV_BAT_FILE!"
 
 :: --- THREE-STAGE AUDIT CLEANUP ---
 
 :: STAGE 1: Call Python for Secure Wipe (Per-pass jitter)
-python scripts\env_init.py --cleanup-only
+if not "!ENV_BAT_FILE!"=="" (
+    if not "!ENV_PS1_FILE!"=="" (
+        python scripts\env_init.py --cleanup-only --cleanup-path "!ENV_BAT_FILE!" --cleanup-path "!ENV_PS1_FILE!"
+    ) else (
+        python scripts\env_init.py --cleanup-only --cleanup-path "!ENV_BAT_FILE!"
+    )
+)
 
 :: STAGE 2: Standard Delete Fallback
-if exist env_vars_tmp.bat (
-    del /f /q env_vars_tmp.bat >nul 2>&1
+if not "!ENV_BAT_FILE!"=="" if exist "!ENV_BAT_FILE!" (
+    del /f /q "!ENV_BAT_FILE!" >nul 2>&1
 )
 
 :: STAGE 2b: Clean up PowerShell env file
-if exist env_vars_tmp.ps1 (
-    del /f /q env_vars_tmp.ps1 >nul 2>&1
+if not "!ENV_PS1_FILE!"=="" if exist "!ENV_PS1_FILE!" (
+    del /f /q "!ENV_PS1_FILE!" >nul 2>&1
 )
 
 :: STAGE 3: Final Audit and Escalation
-if exist env_vars_tmp.bat (
+if not "!ENV_BAT_FILE!"=="" if exist "!ENV_BAT_FILE!" (
     echo.
     echo *******************************************************************
     echo 🚨 ERROR: SENSITIVE FILE PERSISTS AND COULD NOT BE DELETED.
-    echo    Location: %CD%\env_vars_tmp.bat
+    echo    Location: !ENV_BAT_FILE!
     echo.
     echo    ADVICE: Manually delete this file immediately to protect 
     echo            your credentials.
