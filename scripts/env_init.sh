@@ -51,14 +51,20 @@ if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
 fi
 
 SOURCE_STATUS=0
+cleanup_env_file() {
+    rm -f "$ENV_FILE"
+}
+
+trap cleanup_env_file EXIT HUP INT TERM
 while IFS= read -r env_assignment || [ -n "$env_assignment" ]; do
     [ -z "$env_assignment" ] && continue
-    export "$env_assignment" || SOURCE_STATUS=$?
-    if [ "$SOURCE_STATUS" -ne 0 ]; then
+    if ! export "$env_assignment"; then
+        SOURCE_STATUS=1
         break
     fi
 done < "$ENV_FILE"
-rm -f "$ENV_FILE"
+cleanup_env_file
+trap - EXIT HUP INT TERM
 
 if [ "$SOURCE_STATUS" -ne 0 ]; then
     return "$SOURCE_STATUS" 2>/dev/null || exit "$SOURCE_STATUS"

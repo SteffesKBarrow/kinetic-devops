@@ -158,6 +158,7 @@ def main():
                 prefix="env_vars_tmp_",
                 suffix=".sh",
             ) as sf:
+                os.chmod(sf.name, 0o600)
                 for cmd in commands:
                     if cmd.startswith("export "):
                         sf.write(f"{cmd[7:]}\n")
