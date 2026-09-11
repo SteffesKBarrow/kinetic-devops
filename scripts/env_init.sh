@@ -36,8 +36,12 @@ if [ -d "$VENV_PATH" ]; then
     . "$VENV_PATH/bin/activate"
 fi
 
-# Execute Python, source generated export file, then clean it up
-INIT_OUTPUT="$(python3 scripts/env_init.py "${ENV_NAME:-dev}" $SET_API_FLAG)" || return 1 2>/dev/null || exit 1
+# Execute Python and capture generated env assignment file path
+if [ "$SET_API_FLAG" = "--set-api-key" ]; then
+    INIT_OUTPUT="$(python3 scripts/env_init.py "${ENV_NAME:-dev}" "$SET_API_FLAG")" || return 1 2>/dev/null || exit 1
+else
+    INIT_OUTPUT="$(python3 scripts/env_init.py "${ENV_NAME:-dev}")" || return 1 2>/dev/null || exit 1
+fi
 ENV_FILE="$(printf '%s\n' "$INIT_OUTPUT" | sed -n 's/^WRITTEN_SH: //p' | tail -n 1)"
 
 if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
@@ -46,15 +50,15 @@ if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-cleanup_env_file() {
-    rm -f "$ENV_FILE"
-}
-
-trap cleanup_env_file EXIT HUP INT TERM
-. "$ENV_FILE"
-SOURCE_STATUS=$?
-trap - EXIT HUP INT TERM
-cleanup_env_file
+SOURCE_STATUS=0
+while IFS= read -r env_assignment || [ -n "$env_assignment" ]; do
+    [ -z "$env_assignment" ] && continue
+    export "$env_assignment" || SOURCE_STATUS=$?
+    if [ "$SOURCE_STATUS" -ne 0 ]; then
+        break
+    fi
+done < "$ENV_FILE"
+rm -f "$ENV_FILE"
 
 if [ "$SOURCE_STATUS" -ne 0 ]; then
     return "$SOURCE_STATUS" 2>/dev/null || exit "$SOURCE_STATUS"

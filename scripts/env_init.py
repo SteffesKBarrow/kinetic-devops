@@ -159,7 +159,8 @@ def main():
                 suffix=".sh",
             ) as sf:
                 for cmd in commands:
-                    sf.write(f"{cmd}\n")
+                    if cmd.startswith("export "):
+                        sf.write(f"{cmd[7:]}\n")
                 sh_path = Path(sf.name)
             print(f"WRITTEN_SH: {sh_path}")
                 
