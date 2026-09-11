@@ -6,6 +6,7 @@ import argparse
 import secrets
 import random
 import getpass
+import tempfile
 from pathlib import Path
 from typing import Optional, List
 
@@ -149,11 +150,18 @@ def main():
             except Exception:
                 pass
         else:
-            # Unix-like: write exports to a temp file and emit its path.
-            sh_path = env_manager.root_dir / "env_vars_tmp.sh"
-            with open(sh_path, "w", encoding="utf-8") as sf:
+            # Unix-like: write exports to a secure temp file and emit its path.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=env_manager.root_dir,
+                prefix="env_vars_tmp_",
+                suffix=".sh",
+            ) as sf:
                 for cmd in commands:
                     sf.write(f"{cmd}\n")
+                sh_path = Path(sf.name)
             print(f"WRITTEN_SH: {sh_path}")
                 
     except Exception as e:

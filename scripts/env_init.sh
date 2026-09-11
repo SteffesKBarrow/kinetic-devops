@@ -47,6 +47,11 @@ if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
 fi
 
 . "$ENV_FILE"
+SOURCE_STATUS=$?
 rm -f "$ENV_FILE"
+
+if [ "$SOURCE_STATUS" -ne 0 ]; then
+    return "$SOURCE_STATUS" 2>/dev/null || exit "$SOURCE_STATUS"
+fi
 
 echo "✅ Environment initialized."
