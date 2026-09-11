@@ -58,10 +58,26 @@ cleanup_env_file() {
 trap cleanup_env_file EXIT HUP INT TERM
 while IFS= read -r env_assignment || [ -n "$env_assignment" ]; do
     [ -z "$env_assignment" ] && continue
-    if ! export "$env_assignment"; then
-        SOURCE_STATUS=1
-        break
-    fi
+    normalized_assignment="$env_assignment"
+    case "$normalized_assignment" in
+        export\ *) normalized_assignment="${normalized_assignment#export }" ;;
+    esac
+
+    case "$normalized_assignment" in
+        *=*)
+            var_name="${normalized_assignment%%=*}"
+            var_value="${normalized_assignment#*=}"
+            if [ -z "$var_name" ] || ! export "$var_name=$var_value"; then
+                SOURCE_STATUS=1
+                break
+            fi
+            ;;
+        *)
+            SOURCE_STATUS=1
+            break
+            ;;
+    esac
+
 done < "$ENV_FILE"
 cleanup_env_file
 trap - EXIT HUP INT TERM

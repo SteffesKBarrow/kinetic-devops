@@ -160,8 +160,7 @@ def main():
             ) as sf:
                 os.chmod(sf.name, 0o600)
                 for cmd in commands:
-                    if cmd.startswith("export "):
-                        sf.write(f"{cmd[7:]}\n")
+                    sf.write(f"{cmd}\n")
                 sh_path = Path(sf.name)
             print(f"WRITTEN_SH: {sh_path}")
                 
