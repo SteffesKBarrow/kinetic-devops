@@ -46,9 +46,15 @@ if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
+cleanup_env_file() {
+    rm -f "$ENV_FILE"
+}
+
+trap cleanup_env_file EXIT HUP INT TERM
 . "$ENV_FILE"
 SOURCE_STATUS=$?
-rm -f "$ENV_FILE"
+trap - EXIT HUP INT TERM
+cleanup_env_file
 
 if [ "$SOURCE_STATUS" -ne 0 ]; then
     return "$SOURCE_STATUS" 2>/dev/null || exit "$SOURCE_STATUS"

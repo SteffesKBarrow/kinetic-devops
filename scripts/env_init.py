@@ -155,7 +155,6 @@ def main():
                 mode="w",
                 encoding="utf-8",
                 delete=False,
-                dir=env_manager.root_dir,
                 prefix="env_vars_tmp_",
                 suffix=".sh",
             ) as sf:
