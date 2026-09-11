@@ -1280,7 +1280,8 @@ def _jsonc_value(value: Any, indent: int = 0) -> str:
         parts = []
         for key in sorted(value):
             parts.append(f"{child_indent}{json.dumps(str(key), ensure_ascii=False)}: {_jsonc_value(value[key], indent + 2)}")
-        return f"{{\n{',\n'.join(parts)}\n{' ' * indent}}}"
+        joined_parts = ",\n".join(parts)
+        return f"{{\n{joined_parts}\n{' ' * indent}}}"
     return json.dumps(str(value), ensure_ascii=False)
 
 
