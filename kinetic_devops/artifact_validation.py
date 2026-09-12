@@ -69,12 +69,20 @@ def compare_artifact_sections(
         reference_rows = reference.get(section_name, [])
         target_rows = target.get(section_name, [])
 
-        reference_set = {json.dumps(row, sort_keys=True, default=str) for row in reference_rows}
-        target_set = {json.dumps(row, sort_keys=True, default=str) for row in target_rows}
+        reference_keys = [json.dumps(row, sort_keys=True, default=str) for row in reference_rows]
+        target_keys = [json.dumps(row, sort_keys=True, default=str) for row in target_rows]
 
-        reference_only = sorted(reference_set - target_set)
-        target_only = sorted(target_set - reference_set)
-        identical = reference_set == target_set
+        reference_only = sorted(
+            key
+            for key in set(reference_keys)
+            for _ in range(max(0, reference_keys.count(key) - target_keys.count(key)))
+        )
+        target_only = sorted(
+            key
+            for key in set(target_keys)
+            for _ in range(max(0, target_keys.count(key) - reference_keys.count(key)))
+        )
+        identical = sorted(reference_keys) == sorted(target_keys)
 
         comparison[f"{section_name}_identical"] = identical
         comparison[f"{section_name}_reference_only_count"] = len(reference_only)
