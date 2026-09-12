@@ -181,9 +181,10 @@ def load_scope_artifact_from_path(
 ) -> Dict[str, Any]:
     """Load a scope artifact from JSON report or .eas zip package."""
 
-    path = os.path.abspath(str(artifact_path or ""))
-    if not path:
+    raw_path = str(artifact_path or "").strip()
+    if not raw_path:
         raise ValueError("artifact_path is required")
+    path = os.path.abspath(raw_path)
 
     _, ext = os.path.splitext(path)
     ext = ext.lower()
