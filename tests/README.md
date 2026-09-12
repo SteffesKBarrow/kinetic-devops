@@ -8,31 +8,36 @@ tests/README.md - Kinetic SDK Test Suite Documentation
 
 Run all tests with validation:
 ```bash
-python -m tests.test_runner
+uv run python -m tests.test_runner
 # or
-python tests/test_runner.py
+uv run python tests/test_runner.py
 # or
-python -m kinetic_devops.cli.test_runner
+uv run python -m kinetic_devops.cli.test_runner
 ```
 
 Run specific test module:
 ```bash
-python -m unittest tests.test_imports
-python -m unittest tests.test_cli
-python -m unittest tests.test_redaction
-python -m unittest tests.test_base_client_redaction
+uv run python -m unittest tests.test_imports
+uv run python -m unittest tests.test_cli
+uv run python -m unittest tests.test_redaction
+uv run python -m unittest tests.test_base_client_redaction
 ```
 
 Run with verbose output:
 ```bash
-python -m unittest discover -s tests -p "test_*.py" -v
+uv run python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Run canonical pytest gate (configured in pyproject):
+```bash
+uv run python -m pytest -q
 ```
 
 ## Environment Validation
 
 Quick validation of SDK environment:
 ```bash
-python scripts/validate.py
+uv run python scripts/validate.py
 ```
 
 ## Test Runner
@@ -88,7 +93,7 @@ chmod +x scripts/hooks/pre-commit
 git config core.hooksPath scripts/hooks
 ```
 
-The pre-commit hook will automatically run the test suite before allowing commits.
+The pre-commit hook will automatically run the sensitive-data gate and test suite before allowing commits.
 
 ## Environment Validation
 

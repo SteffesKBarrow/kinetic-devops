@@ -13,6 +13,9 @@ from pathlib import Path
 PACKAGE_MODULE_MATRIX = {
     "__init__",
     "__main__",
+    "access_scope",
+    "artifact_validation",
+    "analysis",
     "auth",
     "baq",
     "base_client",
@@ -31,6 +34,7 @@ PACKAGE_MODULE_MATRIX = {
     "repo_context",
     "solutions",
     "tax_service",
+    "trim_trace_paths",
     "zdatatable",
 }
 

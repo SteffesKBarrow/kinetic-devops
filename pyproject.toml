@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kinetic-devops"
-version = "0.1.0a5"
+version = "0.1.0a6"
 description = "Python toolkit for Epicor Kinetic environment management, CI/CD automation, and data migration workflows."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "keyring",
     "requests",
@@ -20,8 +20,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -42,3 +40,30 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = ["kinetic_devops*"]
 exclude = ["tests*", "Documents*", "exports*", "projects*", "temp*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+norecursedirs = [
+    "temp",
+    "tmp",
+    "exports",
+    "projects",
+    "bin",
+    "Data",
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+addopts = "--strict-markers --disable-warnings"

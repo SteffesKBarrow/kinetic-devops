@@ -32,6 +32,10 @@ class KineticBaseClient(KineticCore):
         # Initialize the Core with debug preference [cite: 2]
         super().__init__(debug=debug)
         self.mgr = KineticConfigManager()
+
+        env_nickname = env_nickname or os.environ.get("KINETIC_SESSION_ENV")
+        user_id = user_id or os.environ.get("KINETIC_SESSION_USER")
+        company_id = company_id or os.environ.get("KINETIC_SESSION_CO")
         
         # Standardized environment/user selection 
         if not env_nickname:

@@ -10,8 +10,8 @@
 -  **Multi-environment support** — Seamlessly switch between Dev/Test/Prod
 - 🛠️ **Ready-to-use Service Clients** — High-level clients for BAQ, BOReader, Reports, Tax, and more, built on a robust base client with wire logging and data redaction.
 - 🚀 **Extensible Project Templates** — A "batteries-included" project structure with auto-discovery for creating your own reusable functions, layers, and scheduled jobs.
-- 🤖 **CI/CD Ready** — Designed for automation with environment variable support, programmatic APIs, and pre-commit hooks for local validation.
-- 📜 **Powerful CLI Tools** — Includes tools for environment initialization and common administrative tasks like configuration syncing. Unified test runner includes built-in health validation.
+- 🤖 **CI/CD Ready** — Designed for automation with environment variable support, programmatic APIs, blocking sensitive-data gates, and pre-commit hooks for local validation.
+- 📜 **Powerful CLI Tools** — Includes helper scripts for environment initialization and common administrative tasks like configuration syncing. Unified test runner includes built-in health validation.
 - 🧩 **Layer Lifecycle Operations** — Native MetaFX support for core layer import/delete operations (`ImportLayers` / `BulkDeleteLayers`) with structured error reports.
 - 📦 **Modular architecture** — Extend with custom project submodules
 
@@ -54,6 +54,45 @@ for customer in results['value']:
     print(f"{customer['CustomerID']}: {customer['CustomerName']}")
 ```
 
+### Local Development (.venv)
+
+Use the repository-local virtual environment at `.venv`:
+
+```powershell
+# From repo root
+.\.venv\Scripts\activate
+uv sync
+```
+
+### Analysis Commands (Feature Slice)
+
+The `analysis` router includes three workflows:
+
+```powershell
+# Metadata-only functionality/regression review
+uv run python -m kinetic_devops analysis no-commit-review
+
+# Incremental snapshot + commit AI review
+uv run python -m kinetic_devops analysis diff-review
+
+# Legacy repository intake loop (analysis-only)
+uv run python -m kinetic_devops analysis legacy-intake
+```
+
+Common environment variables:
+- `KINETIC_ACTIVE_ROOT` (default: `D:\Kinetic_SDK`)
+- `KINETIC_AI_BASE_URL` (required for AI-backed runs; set it in your shell or a local activation fragment)
+- `KINETIC_AI_TIMEOUT` (default: `180`)
+- `KINETIC_ANALYSIS_MAX_COMMITS` (default: `20`)
+- `KINETIC_ANALYSIS_LEGACY_OUT_DIR` (default: `D:\Kinetic_SDK\temp\legacy_intake_reviews`)
+
+Example:
+
+```powershell
+Copy-Item scripts\ai_env.local.ps1.example scripts\ai_env.local.ps1
+uv run python -m kinetic_devops analysis diff-review
+```
+
 ### MetaFX Layer DevOps Flow
 
 ```powershell
@@ -83,6 +122,9 @@ python -m kinetic_devops export --env <ENV> --user <USER> --list
 
 # Run one export function
 python -m kinetic_devops export --env <ENV> --user <USER> --function ExportAllCustomBAQs
+
+# Run full export across all configured companies (dedup enabled by default)
+python -m kinetic_devops export --env <ENV> --user <USER> --all-companies --out-dir exports/ExportAllTheThings
 ```
 
 The export command:
@@ -95,6 +137,8 @@ Mode behavior:
 - `--mode auto` (default): uses ExportAllTheThings when present, otherwise native endpoints
 - `--mode eatt`: requires EFx export library behavior
 - `--mode native`: no ExportAllTheThings dependency
+- `--all-companies`: runs exports once per configured company (or use `--companies CO1 CO2`)
+- de-duplication is enabled in `--all-companies` mode and records duplicate pointers in the manifest (`--no-dedup` disables this)
 
 Native examples (no ExportAllTheThings required):
 
@@ -104,6 +148,9 @@ python -m kinetic_devops export --mode native --env <ENV> --user <USER> --out-di
 
 # Pull one endpoint at a time
 python -m kinetic_devops export --mode native --env <ENV> --user <USER> --native-endpoint "/api/v2/odata/{company}/Ice.BO.BAQDesignerSvc/GetList" --native-method POST --native-body '{"whereClause":"SystemFlag=false","pageSize":0,"absolutePage":0}' --native-name baq_list_single
+
+# Run native export plan across all configured companies
+python -m kinetic_devops export --mode native --env <ENV> --user <USER> --all-companies --out-dir exports/native
 ```
 
 ### Solution Workbench Backup And Recreate
@@ -142,7 +189,7 @@ python -m kinetic_devops solutions --env <ENV> --user <USER> build MySolution
 python -m kinetic_devops solutions --env <ENV> --user <USER> install temp/MySolution.cab
 
 # Install with automatic tenant-layer conflict cleanup and one retry
-python -m kinetic_devops solutions --env <ENV> --user <USER> install temp/MySolution.cab --overwrite-duplicate-file --overwrite-duplicate-data --override-directives --auto-clear-layer-conflicts
+uv run kinetic-devops solutions --env <ENV> --user <USER> install temp/MySolution.cab --overwrite-duplicate-file --overwrite-duplicate-data --override-directives --auto-clear-layer-conflicts
 ```
 
 Current recreate behavior is intentionally focused on the Solution Workbench definition:
@@ -180,7 +227,7 @@ Users extend this core by adding private Git submodules for their custom impleme
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - `keyring` — Secure credential storage
 - `requests` — HTTP client
 

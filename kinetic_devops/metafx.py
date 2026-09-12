@@ -216,11 +216,80 @@ class KineticMetafetcher(KineticBaseClient):
             text = (resp.text or "").strip()
             return text[:4000] + "...<truncated>" if len(text) > 4000 else text
 
+
+    def _load_jsonc_file(self, path: str) -> Any:
+        """Load JSON or JSONC payloads from exported dump files.
+
+        Supports line/block comments and trailing commas to match real-world
+        Postman/export artifacts that are JSON-like but not strict JSON.
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+
+        stripped_chars: List[str] = []
+        index = 0
+        in_string = False
+        escape = False
+        in_line_comment = False
+        in_block_comment = False
+
+        while index < len(raw_text):
+            char = raw_text[index]
+            next_char = raw_text[index + 1] if index + 1 < len(raw_text) else ""
+
+            if in_line_comment:
+                if char in "\r\n":
+                    in_line_comment = False
+                    stripped_chars.append(char)
+                index += 1
+                continue
+
+            if in_block_comment:
+                if char == "*" and next_char == "/":
+                    in_block_comment = False
+                    index += 2
+                else:
+                    index += 1
+                continue
+
+            if in_string:
+                stripped_chars.append(char)
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                index += 1
+                continue
+
+            if char == '"':
+                in_string = True
+                stripped_chars.append(char)
+                index += 1
+                continue
+
+            if char == "/" and next_char == "/":
+                in_line_comment = True
+                index += 2
+                continue
+
+            if char == "/" and next_char == "*":
+                in_block_comment = True
+                index += 2
+                continue
+
+            stripped_chars.append(char)
+            index += 1
+
+        cleaned_text = "".join(stripped_chars)
+        cleaned_text = re.sub(r",(?=\s*[}\]])", "", cleaned_text)
+        return json.loads(cleaned_text)
+
     def _collect_layer_calls(self, files: List[str], only: str) -> List[Dict[str, Any]]:
         calls: List[Dict[str, Any]] = []
         for path in files:
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
+            payload = self._load_jsonc_file(path)
             for bo in self._iter_bocalls(payload):
                 request = bo.get("request", {})
                 if not isinstance(request, dict):
@@ -427,6 +496,7 @@ def main():
     layers_parser.add_argument("--timeout", type=int, default=120)
     layers_parser.add_argument("--dry-run", action="store_true")
     layers_parser.add_argument("--report", default="")
+
 
     args = parser.parse_args()
 
