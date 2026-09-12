@@ -1060,6 +1060,45 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
             return 0
 
         detached: List[str] = []
+        detached_rows: List[Dict[str, Any]] = []
+        rollback_attempted = False
+
+        def restore_detached_rows() -> None:
+            nonlocal rollback_attempted
+            if rollback_attempted or not detached_rows:
+                return
+            rollback_attempted = True
+
+            for original_row in detached_rows:
+                key_id = str(original_row.get("KeyID") or "").strip()
+                if not key_id:
+                    continue
+                company = str(original_row.get("Company") or "").strip()
+                original_scope = str(original_row.get("AccessScopeID") or "").strip()
+                step: Dict[str, Any] = {
+                    "step": "restore-detached-scope",
+                    "key_id": key_id,
+                    "scope_id": original_scope,
+                }
+                try:
+                    current_row = target.get_api_key_by_id_and_company(key_id, company) or original_row
+                    ok = target.update_api_key_scope(current_row, original_scope)
+                    step["ok"] = ok
+                    if not ok:
+                        report["failures"].append(f"restore failed for {key_id}")
+                except Exception as restore_exc:
+                    step["ok"] = False
+                    step["error"] = str(restore_exc)
+                    report["failures"].append(f"restore failed for {key_id}: {restore_exc}")
+                report["steps"].append(step)
+
+        def fail_refresh(failure: str, message: str) -> int:
+            report["failures"].append(failure)
+            restore_detached_rows()
+            output = _write_scope_refresh_report(target, report, args.report)
+            print(f"{message}. Report: {output}")
+            return 1
+
         for row in attached_rows:
             key_id = str(row.get("KeyID") or "").strip()
             if not key_id:
@@ -1067,11 +1106,9 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
             ok = target.update_api_key_scope(row, "")
             report["steps"].append({"step": "detach-scope", "key_id": key_id, "ok": ok})
             if not ok:
-                report["failures"].append(f"detach failed for {key_id}")
-                output = _write_scope_refresh_report(target, report, args.report)
-                print(f"Detach phase failed. Report: {output}")
-                return 1
+                return fail_refresh(f"detach failed for {key_id}", "Detach phase failed")
             detached.append(key_id)
+            detached_rows.append(dict(row))
 
         import_eas = str(getattr(args, "import_eas", "") or "").strip()
         import_command = str(args.import_command or "").strip()
@@ -1104,10 +1141,10 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
             )
 
             if "already exists" in log_result.lower() and not bool(getattr(args, "override_existing_scope", False)):
-                report["failures"].append("Import did not overwrite existing scope. Re-run with override enabled.")
-                output = _write_scope_refresh_report(target, report, args.report)
-                print(f"Import step blocked by existing scope. Report: {output}")
-                return 1
+                return fail_refresh(
+                    "Import did not overwrite existing scope. Re-run with override enabled.",
+                    "Import step blocked by existing scope",
+                )
         elif import_command:
             completed = subprocess.run(import_command, shell=True, text=True)
             report["steps"].append(
@@ -1118,25 +1155,22 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
                 }
             )
             if completed.returncode != 0:
-                report["failures"].append(f"Import command failed with code {completed.returncode}")
-                output = _write_scope_refresh_report(target, report, args.report)
-                print(f"Import command failed. Report: {output}")
-                return 1
+                return fail_refresh(f"Import command failed with code {completed.returncode}", "Import command failed")
         elif args.pause_for_import:
             print("\nPerform the supported scope import now, then press Enter to continue with validation and key rebind.")
             input("Press Enter after import completes: ")
             report["steps"].append({"step": "manual-import-pause-complete"})
         else:
-            report["failures"].append("No import step specified. Use --import-eas, --import-command, or --pause-for-import.")
-            output = _write_scope_refresh_report(target, report, args.report)
-            print(f"No import step specified. Report: {output}")
-            return 1
+            return fail_refresh(
+                "No import step specified. Use --import-eas, --import-command, or --pause-for-import.",
+                "No import step specified",
+            )
 
         if not target.access_scope_exists(args.scope_id):
-            report["failures"].append(f"Target scope '{args.scope_id}' not found after import.")
-            output = _write_scope_refresh_report(target, report, args.report)
-            print(f"Target scope '{args.scope_id}' not found after import. Report: {output}")
-            return 1
+            return fail_refresh(
+                f"Target scope '{args.scope_id}' not found after import.",
+                f"Target scope '{args.scope_id}' not found after import",
+            )
 
         target_after_import = build_scope_functional_artifact(target, args.scope_id)
         post_compare = compare_scope_functional_artifacts(reference_artifact, target_after_import)
@@ -1152,10 +1186,7 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
             ok = target.update_api_key_scope(current_row, args.scope_id)
             report["steps"].append({"step": "reattach-scope", "key_id": key_id, "ok": ok})
             if not ok:
-                report["failures"].append(f"reattach failed for {key_id}")
-                output = _write_scope_refresh_report(target, report, args.report)
-                print(f"Reattach phase failed. Report: {output}")
-                return 1
+                return fail_refresh(f"reattach failed for {key_id}", "Reattach phase failed")
             rebound.append(key_id)
 
         failed_verify = []
@@ -1178,10 +1209,10 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
             }
         )
         if failed_verify:
-            report["failures"].append("Re-attach verification failed for one or more keys.")
-            output = _write_scope_refresh_report(target, report, args.report)
-            print(f"Verification failed for {len(failed_verify)} keys. Report: {output}")
-            return 1
+            return fail_refresh(
+                "Re-attach verification failed for one or more keys.",
+                f"Verification failed for {len(failed_verify)} keys",
+            )
 
         output = _write_scope_refresh_report(target, report, args.report)
         print(output)
@@ -1192,6 +1223,7 @@ def run_scope_refresh_import(args: argparse.Namespace) -> int:
         return 0 if post_compare["functionally_identical"] or args.allow_drift else 1
     except Exception as exc:
         report["failures"].append(str(exc))
+        restore_detached_rows()
         output = _write_scope_refresh_report(target, report, args.report)
         print(f"Scope refresh/import failed: {exc}. Report: {output}")
         return 1

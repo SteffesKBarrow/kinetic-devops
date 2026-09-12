@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 import zipfile
 
 from kinetic_devops import access_scope, artifact_validation
@@ -137,6 +137,86 @@ class TestAccessScopeValidation(unittest.TestCase):
         self.assertEqual(refresh_import.call_count, 1)
         self.assertEqual(validate.call_count, 0)
         self.assertEqual(migrate.call_count, 0)
+
+    def test_run_scope_refresh_import_restores_detached_keys_after_import_exception(self):
+        original_row = {"KeyID": "key1", "Company": "EPIC06", "AccessScopeID": "HeadlessMES"}
+        current_row = {"KeyID": "key1", "Company": "EPIC06", "AccessScopeID": ""}
+        target = MagicMock()
+        target.config = {"nickname": "Third"}
+        target.fetch_api_keys.return_value = [original_row]
+        target.update_api_key_scope.side_effect = [True, True]
+        target.get_api_key_by_id_and_company.return_value = current_row
+        target.upload_import_file.side_effect = RuntimeError("upload failed")
+
+        args = argparse.Namespace(
+            target_env="Third",
+            target_user=None,
+            target_company=None,
+            scope_id="HeadlessMES",
+            dry_run=False,
+            pause_for_import=False,
+            import_command="",
+            import_eas="scope.eas",
+            report="report.json",
+            allow_drift=False,
+            override_existing_scope=False,
+            new_access_scope_id="",
+        )
+
+        with patch("kinetic_devops.access_scope.KineticAccessScopeService", return_value=target), patch(
+            "kinetic_devops.access_scope._resolve_reference_scope_artifact", return_value={}
+        ), patch("kinetic_devops.access_scope.build_scope_functional_artifact", return_value={}), patch(
+            "kinetic_devops.access_scope.compare_scope_functional_artifacts",
+            return_value={"functionally_identical": False},
+        ), patch("kinetic_devops.access_scope._write_scope_refresh_report", return_value="report.json"):
+            rc = access_scope.run_scope_refresh_import(args)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(
+            target.update_api_key_scope.call_args_list,
+            [call(original_row, ""), call(current_row, "HeadlessMES")],
+        )
+
+    def test_run_scope_refresh_import_restores_detached_keys_after_post_import_failure(self):
+        original_row = {"KeyID": "key1", "Company": "EPIC06", "AccessScopeID": "HeadlessMES"}
+        current_row = {"KeyID": "key1", "Company": "EPIC06", "AccessScopeID": ""}
+        target = MagicMock()
+        target.config = {"nickname": "Third"}
+        target.fetch_api_keys.return_value = [original_row]
+        target.update_api_key_scope.side_effect = [True, True]
+        target.get_api_key_by_id_and_company.return_value = current_row
+        target.upload_import_file.return_value = {"server_path": "/server/scope.eas", "relative_path": "scope.eas", "status": 200}
+        target.import_access_scope_from_file.return_value = {"status": 0, "log_result": ""}
+        target.access_scope_exists.return_value = False
+
+        args = argparse.Namespace(
+            target_env="Third",
+            target_user=None,
+            target_company=None,
+            scope_id="HeadlessMES",
+            dry_run=False,
+            pause_for_import=False,
+            import_command="",
+            import_eas="scope.eas",
+            report="report.json",
+            allow_drift=False,
+            override_existing_scope=False,
+            new_access_scope_id="",
+        )
+
+        with patch("kinetic_devops.access_scope.KineticAccessScopeService", return_value=target), patch(
+            "kinetic_devops.access_scope._resolve_reference_scope_artifact", return_value={}
+        ), patch("kinetic_devops.access_scope.build_scope_functional_artifact", return_value={}), patch(
+            "kinetic_devops.access_scope.compare_scope_functional_artifacts",
+            return_value={"functionally_identical": False},
+        ), patch("kinetic_devops.access_scope._write_scope_refresh_report", return_value="report.json"):
+            rc = access_scope.run_scope_refresh_import(args)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(
+            target.update_api_key_scope.call_args_list,
+            [call(original_row, ""), call(current_row, "HeadlessMES")],
+        )
 
     def test_main_validate_requires_reference_source(self):
         with self.assertRaises(SystemExit) as ctx:
