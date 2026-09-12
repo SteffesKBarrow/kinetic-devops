@@ -19,7 +19,7 @@ from .access_scope import main as access_scope_main
 import importlib.metadata
 
 
-TOOLS: dict[str, Callable[[], None]] = {
+TOOLS: dict[str, Callable[[], object]] = {
     "auth": auth_main,
     "baq": baq_main,
     "meta": metafx_main,
@@ -178,12 +178,13 @@ def _build_parser(version: str) -> argparse.ArgumentParser:
     return parser
 
 
-def _dispatch_tool(tool_name: str, tool_args: Sequence[str]) -> None:
+def _dispatch_tool(tool_name: str, tool_args: Sequence[str]) -> int:
     old_argv = sys.argv
     try:
         # Delegate directly to the submodule entrypoint to avoid runpy RuntimeWarning behavior.
         sys.argv = [f"{old_argv[0]} {tool_name}", *tool_args]
-        TOOLS[tool_name]()
+        result = TOOLS[tool_name]()
+        return result if isinstance(result, int) else 0
     finally:
         sys.argv = old_argv
 
@@ -203,8 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if str(global_args.tool_help or "").strip():
-        _dispatch_tool(global_args.tool_help, ["--help"])
-        return 0
+        return _dispatch_tool(global_args.tool_help, ["--help"])
 
     selected_session: dict[str, str] | None = None
     if global_args.reuse_last_session or str(global_args.session_id or "").strip():
@@ -233,8 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 os.environ["KINETIC_SESSION_USER"] = selected_session["user"]
             if selected_session.get("co"):
                 os.environ["KINETIC_SESSION_CO"] = selected_session["co"]
-        _dispatch_tool(args[0], args[1:])
-        return 0
+        return _dispatch_tool(args[0], args[1:])
 
     # This handles router-level arguments like --version/--help and unknown command errors.
     parser.parse_args(args)
