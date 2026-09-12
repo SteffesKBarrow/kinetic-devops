@@ -33,6 +33,31 @@ class TestAccessScopeValidation(unittest.TestCase):
         self.assertEqual(result["bo_methods_target_only_count"], 0)
         self.assertFalse(result["functionally_identical"])
 
+    def test_compare_scope_functional_artifacts_fails_closed_on_artifact_errors(self):
+        reference = {
+            "core_error": "403 forbidden",
+            "entity_error": "",
+            "bom_error": "",
+            "core": [],
+            "entities": [],
+            "bo_methods": [],
+        }
+        target = {
+            "core_error": "",
+            "entity_error": "",
+            "bom_error": "",
+            "core": [],
+            "entities": [],
+            "bo_methods": [],
+        }
+
+        result = access_scope.compare_scope_functional_artifacts(reference, target)
+
+        self.assertFalse(result["core_identical"])
+        self.assertTrue(result["entities_identical"])
+        self.assertTrue(result["bo_methods_identical"])
+        self.assertFalse(result["functionally_identical"])
+
     def test_extract_artifact_payload_accepts_nested_pilot(self):
         payload = {
             "scope": "HeadlessMES",

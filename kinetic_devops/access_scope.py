@@ -390,7 +390,21 @@ def build_scope_functional_artifact(service: KineticAccessScopeService, scope_id
 
 
 def compare_scope_functional_artifacts(reference: Dict[str, Any], target: Dict[str, Any]) -> Dict[str, Any]:
-    return compare_artifact_sections(reference, target, ("core", "entities", "bo_methods"))
+    comparison = compare_artifact_sections(reference, target, ("core", "entities", "bo_methods"))
+    section_error_fields = {
+        "core": "core_error",
+        "entities": "entity_error",
+        "bo_methods": "bom_error",
+    }
+
+    for section_name, error_field in section_error_fields.items():
+        if reference.get(error_field) or target.get(error_field):
+            comparison[f"{section_name}_identical"] = False
+
+    comparison["functionally_identical"] = all(
+        comparison[f"{section_name}_identical"] for section_name in ("core", "entities", "bo_methods")
+    )
+    return comparison
 
 
 def _section_delta_rows(reference_rows: List[Dict[str, Any]], target_rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
