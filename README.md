@@ -227,7 +227,7 @@ Users extend this core by adding private Git submodules for their custom impleme
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - `keyring` — Secure credential storage
 - `requests` — HTTP client
 
