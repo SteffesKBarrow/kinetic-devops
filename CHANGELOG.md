@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Dependency updates: integrated Dependabot upgrade for `urllib3` from `2.6.3` to `2.7.0` via `uv.lock`.
+- Project runtime requirement now targets Python `3.10+` (from `3.8+`) in package metadata and README.
 
 ## [0.1.0a6] - 2026-09-09
 
