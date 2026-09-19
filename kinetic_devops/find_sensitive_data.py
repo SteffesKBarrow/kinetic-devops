@@ -224,14 +224,35 @@ def _should_report_generic_base64(
 # Inline marker for narrowly suppressing a known false positive on a single line
 # (e.g. a pattern definition or test fixture that looks like a secret but isn't).
 # Unlike a path-level --exclude, this only silences the one annotated line, so a
-# real secret added elsewhere in the same file is still caught.
+# real secret added elsewhere in the same file is still caught. This only works
+# for the current working tree / new commits though: it can't retroactively
+# annotate lines already committed to history. For git-history/diff/commit/stash
+# scans, KNOWN_PATTERN_FALSE_POSITIVES below covers already-committed false
+# positives by (pattern, path) instead, so a real secret of any *other* pattern
+# type in these files is still caught.
 SUPPRESS_MARKER = "kd-sensitive-scan-ignore-line"
+
+KNOWN_PATTERN_FALSE_POSITIVES: Dict[str, set] = {
+    "PRIVATE_KEY_BLOCK": {
+        "kinetic_devops/find_sensitive_data.py",
+        "tests/test_sensitive_data_scan_exclusions.py",
+    },
+}
+
+
+def _is_known_pattern_false_positive(pattern_name: str, path: str) -> bool:
+    paths = KNOWN_PATTERN_FALSE_POSITIVES.get(pattern_name)
+    if not paths:
+        return False
+    normalized = _normalize_path_for_match(path)
+    return any(normalized == p or normalized.endswith(f"/{p}") for p in paths)
 
 
 def _collect_line_matches(
     line: str,
     patterns: Dict[str, re.Pattern],
     generic_base64_options: Dict[str, Any] | None = None,
+    path: str = "",
 ) -> List[Tuple[str, str]]:
     if SUPPRESS_MARKER in line:
         return []
@@ -239,6 +260,8 @@ def _collect_line_matches(
     options = generic_base64_options or {}
 
     for pattern_name, regex in patterns.items():
+        if path and _is_known_pattern_false_positive(pattern_name, path):
+            continue
         for match in regex.finditer(line):
             if pattern_name == "GENERIC_BASE64_32":
                 candidate = match.group(1) if match.lastindex else match.group(0).strip("\"'")
@@ -276,7 +299,7 @@ def scan_zip_archive(
                         text_file = io.TextIOWrapper(f, encoding='utf-8', errors='ignore')
                         for i, line in enumerate(text_file, 1):
                             if len(line) > 500: continue
-                            for pattern_name, matched_text in _collect_line_matches(line, patterns, generic_base64_options):
+                            for pattern_name, matched_text in _collect_line_matches(line, patterns, generic_base64_options, path=member.filename):
                                 findings.append((f"{zip_path}!{member.filename}", i, pattern_name, matched_text))
                 except Exception:
                     pass
@@ -381,7 +404,7 @@ def scan_git_history(
                 continue
                 
             content = line[1:]
-            for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+            for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options, path=current_file):
                 findings.append((f"COMMIT: {current_commit} ({current_file})", 0, pattern_name, content.strip()[:100]))
                     
         process.wait()
@@ -431,7 +454,7 @@ def scan_git_diff(
                     continue
                 content = line[1:]
                 if len(content) > 500: continue
-                for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options, path=current_file):
                     findings.append((f"DIFF ({diff_type}): {current_file}", 0, pattern_name, content.strip()[:100]))
         process.wait()
         if process.returncode != 0:
@@ -473,7 +496,7 @@ def scan_git_commit(
                     continue
                 content = line[1:]
                 if len(content) > 500: continue
-                for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options, path=current_file):
                     findings.append((f"COMMIT: {commit_hash[:7]} ({current_file})", 0, pattern_name, content.strip()[:100]))
         process.wait()
         if process.returncode != 0:
@@ -526,7 +549,7 @@ def scan_git_stashes(
                         continue
                     content = line[1:]
                     if len(content) > 500: continue
-                    for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
+                    for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options, path=current_file):
                         findings.append((f"STASH: {stash_ref} ({current_file})", 0, pattern_name, content.strip()[:100]))
             process.wait()
             if process.returncode != 0:
@@ -560,7 +583,7 @@ def find_sensitive_data(
                     # Skip minified lines
                     if len(line) > 500: continue
 
-                    for pattern_name, matched_text in _collect_line_matches(line, all_patterns, generic_base64_options):
+                    for pattern_name, matched_text in _collect_line_matches(line, all_patterns, generic_base64_options, path=file_path):
                         findings.append((file_path, i, pattern_name, matched_text))
         except Exception:
             pass
