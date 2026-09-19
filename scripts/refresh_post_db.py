@@ -82,17 +82,13 @@ def update_company(env_nickname: str, company: str) -> bool:
         True if all operations succeeded, False otherwise
     """
     try:
-        # Get active configuration
-        config = KineticConfigManager.get_active_config({"nickname": env_nickname})
-        
-        if config is None:
-            log_error(f"Failed to get active config for {env_nickname}")
-            return False
-        
-        url = config.get('url')
-        token = config.get('token')
-        api_key = config.get('api_key')
-        
+        # Get active configuration (session-aware, will prompt if needed)
+        mgr = KineticConfigManager(debug=False)
+        url, token, api_key = mgr.get_active_config(
+            {"nickname": env_nickname},
+            fields=("url", "token", "api_key"),
+        )
+
         if not all([url, token, api_key]):
             log_error(f"Missing required config fields for {env_nickname}")
             return False
