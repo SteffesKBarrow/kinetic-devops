@@ -31,7 +31,7 @@ from pathlib import Path
 scripts_dir = Path(__file__).parent
 sys.path.insert(0, str(scripts_dir.parent))
 
-from kinetic_devops.auth import KineticConfigManager, prompt_for_env
+from kinetic_devops.auth import KineticConfigManager
 from kinetic_devops.tax_service import TaxService
 
 
@@ -84,21 +84,17 @@ def clear_company_tax_configs(env_nickname: str, company: str, inactive_only: bo
     """
     try:
         # Get active configuration (session-aware, will prompt if needed)
-        config = KineticConfigManager.get_active_config({"nickname": env_nickname})
-        
-        if config is None:
-            log_error(f"Failed to get active config for {env_nickname}")
-            return False
-        
-        url = config.get('url')
-        token = config.get('token')
-        api_key = config.get('api_key')
+        mgr = KineticConfigManager(debug=False)
+        url, token, api_key = mgr.get_active_config(
+            {"nickname": env_nickname},
+            fields=("url", "token", "api_key"),
+        )
         
         if not all([url, token, api_key]):
             log_error(f"Missing required config fields for {env_nickname}")
             return False
         
-        log_info(f"Clearing tax configs for {env_nickname}/{company} (inactive_only={inactive_only})")
+        log_info(f"Clearing tax configs in-place for {env_nickname}/{company} (inactive_only={inactive_only})")
         
         # Use TaxService to handle operations
         tax_service = TaxService(url, token, api_key, debug=False)
@@ -108,7 +104,7 @@ def clear_company_tax_configs(env_nickname: str, company: str, inactive_only: bo
             records = tax_service.get_inactive_configs(company)
             if records is not None:
                 log_info(f"Found {len(records)} inactive tax config(s) for {company}")
-                success = tax_service.delete_configs(company, records)
+                success = tax_service.update_configs(company, records)
             else:
                 log_error(f"Failed to fetch inactive configs for {company}")
                 success = False
@@ -194,13 +190,12 @@ def main():
         
         else:
             # Interactive mode
-            config = prompt_for_env()
-            
-            if config is None:
+            mgr = KineticConfigManager(debug=False)
+            env_nickname, _, _ = mgr.prompt_for_env()
+
+            if not env_nickname:
                 log_error("Failed to get environment configuration")
                 return 1
-            
-            env_nickname = config.get('nickname')
             
             # Prompt for companies
             companies_input = input("\nEnter company ID(s) to clear (space-separated, e.g., 'ACME-LABS ACME'): ").strip()

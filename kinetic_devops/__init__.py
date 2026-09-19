@@ -3,7 +3,7 @@ try:
     import keyring
 except ImportError:
     print("Error: The 'keyring' module is not installed. Please activate the virtual environment and install the required packages.")
-    print("To activate the virtual environment, run: .\\venv\\Scripts\\activate")
+    print("To activate the virtual environment, run: .\\.venv\\Scripts\\activate")
     print("To install the required packages, run: pip install -r requirements.txt")
     exit(1)
 

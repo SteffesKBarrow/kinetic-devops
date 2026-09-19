@@ -22,6 +22,15 @@ class TestEntryRouter(unittest.TestCase):
         self.assertEqual(captured["argv"][1:], ["--help"])
         self.assertTrue(captured["argv"][0].endswith(" baq"))
 
+    def test_main_propagates_known_tool_exit_code(self):
+        def fake_tool_main():
+            return 7
+
+        with patch.dict(router.TOOLS, {"scope": fake_tool_main}, clear=True):
+            exit_code = router.main(["scope", "--invalid"])
+
+        self.assertEqual(exit_code, 7)
+
     def test_main_returns_nonzero_when_no_arguments(self):
         with patch("sys.stdout"):
             exit_code = router.main([])

@@ -11,10 +11,11 @@ scripts\env_init.bat [env-name]
 ```
 
 This activates a Python venv (if present) and sets:
-- `KIN_URL`, `KIN_COMPANY`, `KIN_ENV_NAME`, `KIN_API_KEY` (Kinetic connection vars)
+- `KIN_COMPANY`, `KIN_ENV_NAME` (script context vars)
+- `KINETIC_TAXCONFIG_DB` (SQLite config location)
 - `PYTHONPATH` (points to repo root so scripts can import `kinetic_devops`)
 
-The script generates and executes `env_vars_tmp.bat`, then securely erases it.
+The script generates and executes a randomized temp `.bat` file under your OS temp directory, then securely erases it.
 
 ### Windows (PowerShell):
 
@@ -23,6 +24,8 @@ The script generates and executes `env_vars_tmp.bat`, then securely erases it.
 ```
 
 Same behavior as `.bat`, but for PowerShell. Dot-source the script to inherit environment variables in your session.
+
+To keep AI endpoint configuration out of source control, create `scripts/ai_env.local.ps1` from the example file and let `env_init.ps1` source it automatically.
 
 ### Unix-like (bash/sh):
 
@@ -39,9 +42,9 @@ Activates a Python venv and sets environment variables.
 After environment setup, run the canonical test runner:
 
 ```powershell
-python -m tests.test_runner
+uv run python -m tests.test_runner
 # or
-python tests/test_runner.py
+uv run python tests/test_runner.py
 ```
 
 - The test runner validates the environment, discovers tests under `tests/`, and writes results to `tests/test_results.log`.
@@ -59,7 +62,7 @@ Copy-Item scripts\hooks\pre-commit .git\hooks\pre-commit
 git config core.hooksPath scripts/hooks
 ```
 
-The hook runs `python -m tests.test_runner` before each commit.
+The hook runs a blocking sensitive-data scan on staged content and then `python -m tests.test_runner` before each commit.
 
 ## Branch Protection Automation (GitHub + Forgejo)
 
@@ -93,15 +96,15 @@ Token resolution order:
 Unified smoke wrapper (auto-detect provider from git remote):
 
 ```powershell
-python scripts/repo_maker.py
-python scripts/repo_maker.py --apply
+uv run python scripts/repo_maker.py
+uv run python scripts/repo_maker.py --apply
 ```
 
 Modular package commands (same behavior, namespaced under RepoMaker):
 
 ```powershell
-python -m kinetic_devops.repomaker reposmith --apply
-python -m kinetic_devops.repomaker apply --config scripts/branch_protection.targets.json --apply
+uv run python -m kinetic_devops.repomaker reposmith --apply
+uv run python -m kinetic_devops.repomaker apply --config scripts/branch_protection.targets.json --apply
 ```
 
 Installed console scripts (after package install):
@@ -115,13 +118,13 @@ reposmith --apply
 Dry-run preview (default):
 
 ```powershell
-python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json
+uv run python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json
 ```
 
 Apply changes:
 
 ```powershell
-python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json --apply
+uv run python scripts/apply_branch_protection.py --config scripts/branch_protection.targets.json --apply
 ```
 
 The script supports:
@@ -239,6 +242,22 @@ python scripts/pull_api_store.py --surface methods --service <SERVICE>
 python -m kinetic_devops meta --env <ENV> --user <USER> layers "C:/Users/<you>/Downloads/dump (5).json" "C:/Users/<you>/Downloads/dump (6).json"
 python -m kinetic_devops meta --env <ENV> --user <USER> layers dump5.json dump6.json --ops import
 python -m kinetic_devops meta --env <ENV> --user <USER> layers dump5.json dump6.json --dry-run
+
+# Trim trace files and generate a delta sidecar for review
+python kinetic_devops/trim_trace_paths.py trace.json --drop "*.request.headers.Authorization" --delta-mode summary --delta-format jsonc
+python kinetic_devops/trim_trace_paths.py trace.json --drop "*.request.headers.Authorization" --delta-mode annotated --delta-format both --no-delta-redact-values
+
+# Migrate API key access scope from one instance to another (direct remap)
+python -m kinetic_devops scope --source-env Pilot --target-env Third --from-scope LEGACY_SCOPE --to-scope NEW_SCOPE
+
+# Detach scope first, run fresh export/import, then rebind and verify (only needed when the scope is already in use)
+python -m kinetic_devops scope --source-env Third --target-env Prod --from-scope PREIMPORT_SCOPE --to-scope PROD_SCOPE --strategy detach-rebind --pause-for-import
+
+# First-class validation: compare target scope definition against production/reference env
+python -m kinetic_devops scope validate --scope-id HeadlessMES --reference-env Pilot --target-env Third --report exports/System-Apps/AccessScopeMigr/HeadlessMES_scope_functional_compare.json
+
+# Validate target against a saved production artifact and keep exit success on known drift
+python -m kinetic_devops scope validate --scope-id HeadlessMES --reference-artifact exports/System-Apps/AccessScopeMigr/HeadlessMES_pilot_snapshot.json --target-env Third --allow-drift
 ```
 
 ### pull_tax_configs.py options:
@@ -330,5 +349,5 @@ Default `--ops import` behavior is deployment mode: delete first, then import.
 ## Notes
 
 - `PYTHONPATH` is set during environment initialization, enabling imports from the repository root.
-- Temporary env files (`env_vars_tmp.bat`, `env_vars_tmp.ps1`) are securely wiped after use.
+- Temporary env files are randomized under the OS temp directory and securely wiped after use.
 - The `pull_tax_configs.py` script uses stored Kinetic configuration from the keyring to authenticate.

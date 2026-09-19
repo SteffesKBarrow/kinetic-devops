@@ -4,11 +4,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from kinetic_devops.find_sensitive_data import get_files_to_scan, scan_git_history
+from kinetic_devops.find_sensitive_data import get_files_to_scan, scan_git_history, _should_report_generic_base64
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 class _FakePopen:
@@ -68,13 +71,13 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
         self.assertIn("exports/artifact.json", rel_files)
 
     def test_scan_git_history_respects_excluded_paths(self):
-        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}
+        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}  # kd-sensitive-scan-ignore-line: pattern fixture, not a secret
         fake_log = [
             "commit deadbeef\n",
             "diff --git a/exports/secret.txt b/exports/secret.txt\n",
-            "+PRIVATE KEY SHOULD BE EXCLUDED\n",
+            "+PRIVATE KEY SHOULD BE EXCLUDED\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
             "diff --git a/src/app.py b/src/app.py\n",
-            "+PRIVATE KEY SHOULD BE FOUND\n",
+            "+PRIVATE KEY SHOULD BE FOUND\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
         ]
 
         with patch("kinetic_devops.find_sensitive_data.subprocess.Popen", return_value=_FakePopen(fake_log)):
@@ -87,13 +90,13 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
         self.assertIn("FOUND", match)
 
     def test_scan_git_history_honors_explicit_include_path(self):
-        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}
+        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}  # kd-sensitive-scan-ignore-line: pattern fixture, not a secret
         fake_log = [
             "commit deadbeef\n",
             "diff --git a/kinetic_devops/find_sensitive_data.py b/kinetic_devops/find_sensitive_data.py\n",
-            "+PRIVATE KEY OUTSIDE SCOPE\n",
+            "+PRIVATE KEY OUTSIDE SCOPE\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
             "diff --git a/exports/inside.txt b/exports/inside.txt\n",
-            "+PRIVATE KEY INSIDE SCOPE\n",
+            "+PRIVATE KEY INSIDE SCOPE\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
         ]
 
         with patch("kinetic_devops.find_sensitive_data.subprocess.Popen", return_value=_FakePopen(fake_log)):
@@ -104,6 +107,72 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
         self.assertIn("exports/inside.txt", location)
         self.assertEqual(pattern_name, "PRIVATE_KEY_BLOCK")
         self.assertIn("INSIDE", match)
+
+    def test_cli_fail_on_findings_returns_nonzero(self):
+        secret_file = os.path.join(self.td, "secret.txt")
+        with open(secret_file, "w", encoding="utf-8") as f:
+            f.write("PRIVATE KEY SHOULD FAIL\n")  # kd-sensitive-scan-ignore-line: fixture data, not a secret
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "kinetic_devops.find_sensitive_data",
+                "--file",
+                secret_file,
+                "--no-keyring",
+                "--no-generic-base64",
+                "--fail-on-findings",
+            ],
+            cwd=self.td,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONPATH": os.pathsep.join(
+                    filter(None, [REPO_ROOT, os.environ.get("PYTHONPATH", "")])
+                ),
+            },
+            timeout=60,
+        )
+
+        stdout_text = (result.stdout or b"").decode("utf-8", errors="replace")
+        stderr_text = (result.stderr or b"").decode("utf-8", errors="replace")
+        self.assertEqual(result.returncode, 1, msg=stdout_text + stderr_text)
+        self.assertIn("Sensitive data found", stdout_text)
+
+    def test_generic_base64_ignores_camel_case_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("GetSolutionItemsAsDynamicDataSet"))
+
+    def test_generic_base64_ignores_snake_case_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("token_payload_blob_string_value"))
+
+    def test_generic_base64_can_include_alpha_only_when_requested(self):
+        self.assertTrue(
+            _should_report_generic_base64(
+                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
+                include_alpha_only=True,
+            )
+        )
+
+    def test_generic_base64_can_include_snake_case_when_requested(self):
+        self.assertTrue(
+            _should_report_generic_base64(
+                "YWJjX2RlZl9naGlfamtsX21ub19wcXJfc3R1",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
+                include_snake_case=True,
+            )
+        )
+
+    def test_generic_base64_ignores_dash_separated_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("manual-import-pause-complete"))
+
+    def test_generic_base64_ignores_path_like_identifier_by_default(self):
+        self.assertFalse(_should_report_generic_base64("reports/CustomReports/ReportName"))
+
+    def test_generic_base64_ignores_repeated_punctuation(self):
+        self.assertFalse(_should_report_generic_base64("--------------------------------"))
 
 
 if __name__ == "__main__":

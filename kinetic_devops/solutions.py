@@ -426,12 +426,12 @@ class KineticSolutionService(KineticBaseClient):
     def _call(self, method_name: str, body: Optional[Dict[str, Any]] = None, company: str = "") -> Dict[str, Any]:
         target_co = company if company else self.config["company"]
         url = _export_package_url(self.config["url"], target_co, method_name)
-        return self.execute_request("POST", url, payload=body or {})
+        return self.execute_request("POST", url, payload=body or {}, company=target_co)
 
     def _call_file_transfer(self, method_name: str, body: Optional[Dict[str, Any]] = None, company: str = "") -> Dict[str, Any]:
         target_co = company if company else self.config["company"]
         url = f"{self.config['url'].rstrip('/')}/api/v2/odata/{target_co}/Ice.Lib.FileTransferSvc/{method_name}"
-        return self.execute_request("POST", url, payload=body or {})
+        return self.execute_request("POST", url, payload=body or {}, company=target_co)
 
     def _get_metafx_service(self) -> KineticMetafetcher:
         svc = getattr(self, "_metafx_service", None)
@@ -906,6 +906,7 @@ class KineticSolutionService(KineticBaseClient):
             for validation_name in ("Validation.txt", "validation.txt"):
                 normalized_server_dir = server_dir.rstrip("/\\")
                 validation_server_path = f"{normalized_server_dir}/{validation_name}"
+                
                 try:
                     payload = self.download_server_file(validation_server_path, folder=folder, company=company)
                 except Exception:

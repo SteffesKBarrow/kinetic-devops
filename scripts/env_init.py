@@ -5,7 +5,8 @@ import sys
 import argparse
 import secrets
 import random
-import getpass
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional, List
 
@@ -31,15 +32,35 @@ class KineticEnvManager:
     def __init__(self, env_nickname: str = None, db_override: str = None):
         # 1. ESTABLISH ROOT: Go up one level from /scripts/env_init.py
         self.root_dir = Path(__file__).resolve().parent.parent
-        # 2. DEFINE TEMP FILE: Always in the root for the .bat to pick up
-        self.temp_file = self.root_dir / "env_vars_tmp.bat"
+        # 2. DEFINE TEMP FILES: Use per-run randomized files in OS temp dir
+        self.temp_dir = Path(tempfile.gettempdir()) / "kinetic_env_init"
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        token = secrets.token_hex(8)
+        self.temp_file = self.temp_dir / f"env_vars_{token}.bat"
+        self.ps1_file = self.temp_dir / f"env_vars_{token}.ps1"
         self.env_nickname = env_nickname
         self.mgr = KineticConfigManager()
         # 3. SQLite DB location logic
         self.default_db_path = os.path.join(str(self.root_dir), "bin", "sdk-config")
         self.db_path = db_override or os.environ.get("KINETIC_TAXCONFIG_DB") or self.default_db_path
 
-    def get_env_commands(self, set_api_key: bool = False) -> List[str]:
+    def cleanup_stale_temp_files(self, max_age_seconds: int = 24 * 3600):
+        """Best-effort cleanup for stale temp files from interrupted runs."""
+        if not self.temp_dir.exists():
+            return
+
+        now = time.time()
+
+        for pattern in ("env_vars_*.bat", "env_vars_*.ps1"):
+            for item in self.temp_dir.glob(pattern):
+                try:
+                    age = int(now - item.stat().st_mtime)
+                    if age > max_age_seconds:
+                        item.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    def get_env_commands(self) -> List[str]:
         """Resolves the environment and generates the shell 'set' commands."""
         # 1. Resolution Logic
         target = self.env_nickname or "dev"
@@ -62,16 +83,9 @@ class KineticEnvManager:
         commands = []
         prefix = "set " if os.name == 'nt' else "export "
 
-        # Standard env vars
-        commands.append(f"{prefix}KIN_URL={base_cfg['url']}") 
-        commands.append(f"{prefix}KIN_COMPANY={base_cfg['companies']}") 
-        commands.append(f"{prefix}KIN_ENV_NAME={base_cfg['nickname']}") 
-
-        if set_api_key:
-            val = getpass.getpass(f"Enter API Key for [{base_cfg['nickname']}]: ").strip()
-            commands.append(f"{prefix}KIN_API_KEY={val}")
-        else:
-            commands.append(f"{prefix}KIN_API_KEY={base_cfg['api_key']}") 
+        # Only emit values consumed by downstream scripts.
+        commands.append(f"{prefix}KIN_COMPANY={base_cfg['companies']}")
+        commands.append(f"{prefix}KIN_ENV_NAME={base_cfg['nickname']}")
 
         # Ensure PYTHONPATH points to repo root so helper scripts can import the SDK
         repo_root = str(self.root_dir).replace('\\', '/') if os.name != 'nt' else str(self.root_dir)
@@ -108,19 +122,26 @@ class KineticEnvManager:
 def main():
     parser = argparse.ArgumentParser(description="Kinetic Environment Initializer Helper")
     parser.add_argument("env", nargs="?", default=None, help="Nickname of the environment")
-    parser.add_argument("--set-api-key", action="store_true", help="Manually prompt for API Key")
     parser.add_argument("--cleanup-only", action="store_true", help="Wipe the temp .bat file and exit")
+    parser.add_argument("--cleanup-path", action="append", default=[], help="Explicit temp file path to wipe; may be repeated")
     parser.add_argument("--taxconfig-db", default=None, help="Override path for KINETIC_TAXCONFIG_DB (SQLite config DB)")
     args, _ = parser.parse_known_args()
 
     env_manager = KineticEnvManager(args.env, db_override=args.taxconfig_db)
+    env_manager.cleanup_stale_temp_files()
 
     if args.cleanup_only:
-        success = env_manager.secure_wipe_and_delete()
+        success = True
+        paths = [p for p in args.cleanup_path if p]
+        if not paths:
+            paths = [str(env_manager.temp_file), str(env_manager.ps1_file)]
+        for item in paths:
+            if not env_manager.secure_wipe_and_delete(item):
+                success = False
         sys.exit(0) if success else sys.exit(1)
 
     try:
-        commands = env_manager.get_env_commands(set_api_key=args.set_api_key)
+        commands = env_manager.get_env_commands()
         target_path = env_manager.temp_file 
         
         if os.name == 'nt':
@@ -130,9 +151,9 @@ def main():
                 for cmd in commands:
                     f.write(f"{cmd}\n")
             # The .bat script looks for this specific string to know it succeeded
-            print(f"WRITTEN_TO: {target_path}") 
+            print(f"WRITTEN_TO={target_path}")
             # Also write a PowerShell-friendly env file so PowerShell users can dot-source it.
-            ps1_path = env_manager.root_dir / "env_vars_tmp.ps1"
+            ps1_path = env_manager.ps1_file
             try:
                 with open(ps1_path, "w", encoding="utf-8") as pf:
                     pf.write("# Generated by scripts/env_init.py - PowerShell env file\n")
@@ -145,7 +166,7 @@ def main():
                                 # Escape single quotes in value
                                 v_esc = v.replace("'", "''")
                                 pf.write(f"Set-Item -Path Env:{k} -Value '{v_esc}'\n")
-                print(f"WRITTEN_PS1: {ps1_path}")
+                print(f"WRITTEN_PS1={ps1_path}")
             except Exception:
                 pass
         else:
