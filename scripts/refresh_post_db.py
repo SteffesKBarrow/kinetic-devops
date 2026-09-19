@@ -31,7 +31,7 @@ from pathlib import Path
 scripts_dir = Path(__file__).parent
 sys.path.insert(0, str(scripts_dir.parent))
 
-from kinetic_devops.auth import KineticConfigManager, prompt_for_env
+from kinetic_devops.auth import KineticConfigManager
 from kinetic_devops.tax_service import TaxService
 from kinetic_devops.file_service import FileService
 
@@ -208,13 +208,12 @@ def main():
         
         else:
             # Interactive mode
-            config = prompt_for_env()
-            
-            if config is None:
+            mgr = KineticConfigManager(debug=False)
+            env_nickname, _, _ = mgr.prompt_for_env()
+
+            if not env_nickname:
                 log_error("Failed to get environment configuration")
                 return 1
-            
-            env_nickname = config.get('nickname')
             
             # Prompt for companies
             companies_input = input("\nEnter company ID(s) to update (space-separated, e.g., 'ACME-LABS ICE'): ").strip()
