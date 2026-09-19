@@ -71,13 +71,13 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
         self.assertIn("exports/artifact.json", rel_files)
 
     def test_scan_git_history_respects_excluded_paths(self):
-        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}
+        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}  # kd-sensitive-scan-ignore-line: pattern fixture, not a secret
         fake_log = [
             "commit deadbeef\n",
             "diff --git a/exports/secret.txt b/exports/secret.txt\n",
-            "+PRIVATE KEY SHOULD BE EXCLUDED\n",
+            "+PRIVATE KEY SHOULD BE EXCLUDED\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
             "diff --git a/src/app.py b/src/app.py\n",
-            "+PRIVATE KEY SHOULD BE FOUND\n",
+            "+PRIVATE KEY SHOULD BE FOUND\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
         ]
 
         with patch("kinetic_devops.find_sensitive_data.subprocess.Popen", return_value=_FakePopen(fake_log)):
@@ -90,13 +90,13 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
         self.assertIn("FOUND", match)
 
     def test_scan_git_history_honors_explicit_include_path(self):
-        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}
+        patterns = {"PRIVATE_KEY_BLOCK": re.compile(r"PRIVATE KEY")}  # kd-sensitive-scan-ignore-line: pattern fixture, not a secret
         fake_log = [
             "commit deadbeef\n",
             "diff --git a/kinetic_devops/find_sensitive_data.py b/kinetic_devops/find_sensitive_data.py\n",
-            "+PRIVATE KEY OUTSIDE SCOPE\n",
+            "+PRIVATE KEY OUTSIDE SCOPE\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
             "diff --git a/exports/inside.txt b/exports/inside.txt\n",
-            "+PRIVATE KEY INSIDE SCOPE\n",
+            "+PRIVATE KEY INSIDE SCOPE\n",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
         ]
 
         with patch("kinetic_devops.find_sensitive_data.subprocess.Popen", return_value=_FakePopen(fake_log)):
@@ -111,7 +111,7 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
     def test_cli_fail_on_findings_returns_nonzero(self):
         secret_file = os.path.join(self.td, "secret.txt")
         with open(secret_file, "w", encoding="utf-8") as f:
-            f.write("PRIVATE KEY SHOULD FAIL\n")
+            f.write("PRIVATE KEY SHOULD FAIL\n")  # kd-sensitive-scan-ignore-line: fixture data, not a secret
 
         result = subprocess.run(
             [
@@ -152,7 +152,7 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
     def test_generic_base64_can_include_alpha_only_when_requested(self):
         self.assertTrue(
             _should_report_generic_base64(
-                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",
+                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
                 include_alpha_only=True,
             )
         )
@@ -160,7 +160,7 @@ class TestSensitiveDataScanExclusions(unittest.TestCase):
     def test_generic_base64_can_include_snake_case_when_requested(self):
         self.assertTrue(
             _should_report_generic_base64(
-                "YWJjX2RlZl9naGlfamtsX21ub19wcXJfc3R1",
+                "YWJjX2RlZl9naGlfamtsX21ub19wcXJfc3R1",  # kd-sensitive-scan-ignore-line: fixture data, not a secret
                 include_snake_case=True,
             )
         )

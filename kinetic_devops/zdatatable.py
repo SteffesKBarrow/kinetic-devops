@@ -109,7 +109,7 @@ def diff_field_rows(source: Dict[str, Any], target: Dict[str, Any]) -> Dict[str,
 class KineticZDataTableService(KineticBaseClient):
     def _call(self, method: str, payload: Optional[Dict[str, Any]] = None, company: str = "") -> Dict[str, Any]:
         target_co = company or self.config["company"]
-        return self.execute_request("POST", _zdt_url(self.config["url"], target_co, method), payload=payload or {})
+        return self.execute_request("POST", _zdt_url(self.config["url"], target_co, method), payload=payload or {}, company=target_co)
 
     def get_by_id_ud(self, system_code: str, table_id: str, company: str = "") -> Dict[str, Any]:
         response = self._call(

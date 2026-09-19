@@ -318,9 +318,11 @@ class KineticConfigManager(KineticCore):
 
         env_match, actual_user = self.get_session_by_bearer(token, ("nickname", "user_id"))
         if env_match and env_match.lower() != str(nickname or name).lower():
-            print(f"⚠️ Security Alert: Token belongs to {env_match}, but targeting {nickname or name}!")
+            print(f"❌ Sync Failure: Token belongs to {env_match}, but targeting {nickname or name}! Aborting.")
+            return tuple(local_list)
         if actual_user and user_id and str(actual_user).lower() != str(user_id).lower():
-            print(f"⚠️ Security Alert: Token user is {actual_user}, but targeting {user_id}!")
+            print(f"❌ Sync Failure: Token user is {actual_user}, but targeting {user_id}! Aborting.")
+            return tuple(local_list)
 
         base_url = str(url).rstrip('/')
         user_id_wc = str(user_id or "").replace("'", "''")
@@ -913,7 +915,15 @@ class KineticConfigManager(KineticCore):
         `companies` field and ensures each entry contains a `display_name`.
         """
         servers = self._get_server_dict()
-        new_servers = {k: {"url": v.get("url", ""), "companies": v.get("companies") or v.get("company") or "ACME", "display_name": k} for k, v in servers.items() if isinstance(v, dict)}
+        new_servers = {}
+        for k, v in servers.items():
+            if not isinstance(v, dict):
+                continue
+            entry = dict(v)
+            entry["companies"] = entry.get("companies") or entry.pop("company", None) or "ACME"
+            entry.pop("company", None)
+            entry.setdefault("display_name", k)
+            new_servers[k] = entry
         keyring.set_password(SERVICE_SERVERS, "config", json.dumps(new_servers))
         print("✅ Migration complete.")
 

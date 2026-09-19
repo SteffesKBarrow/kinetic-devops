@@ -275,7 +275,7 @@ class KineticExportAllService(KineticEFxService):
             "Ice.BO.EfxLibraryDesignerSvc/GetLibrary"
         )
 
-        headers = self.mgr.get_auth_headers(self.config)
+        headers = self.mgr.get_auth_headers({**self.config, "company": target_co})
         payload = {"libraryID": library}
 
         self._last_discovery_error = {}
@@ -335,7 +335,7 @@ class KineticExportAllService(KineticEFxService):
         else:
             url = f"{self.config['url'].rstrip('/')}/{rendered_endpoint.lstrip('/')}"
 
-        headers = self.mgr.get_auth_headers(self.config)
+        headers = self.mgr.get_auth_headers({**self.config, "company": target_co})
         query = _parse_query_params(params)
         payload = _deep_template(body or {}, mapping)
 
@@ -407,22 +407,21 @@ class KineticExportAllService(KineticEFxService):
                 json.dump(payload, f, indent=2, ensure_ascii=False)
             payload_type = "json"
         else:
-            text_preview = None
             payload_type = "binary"
-            try:
-                text_preview = response.text
-                if text_preview and not response.content.startswith(b"PK"):
+            is_textual = content_type.startswith("text/") or content_type in (
+                "application/xml", "application/csv", "application/xhtml+xml",
+            )
+            if is_textual:
+                try:
                     output_file = os.path.join(out_dir, f"{base_name}.txt")
                     output_file = self.resolve_output_path(output_file, conflict_resolution="timestamp")
                     with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(text_preview)
+                        f.write(response.text)
                     payload_type = "text"
-                else:
-                    output_file = os.path.join(out_dir, f"{base_name}.bin")
-                    output_file = self.resolve_output_path(output_file, conflict_resolution="timestamp")
-                    with open(output_file, "wb") as f:
-                        f.write(response.content)
-            except Exception:
+                except Exception:
+                    is_textual = False
+
+            if not is_textual:
                 output_file = os.path.join(out_dir, f"{base_name}.bin")
                 output_file = self.resolve_output_path(output_file, conflict_resolution="timestamp")
                 with open(output_file, "wb") as f:
@@ -668,7 +667,8 @@ class KineticExportAllService(KineticEFxService):
                 "response": result,
             }
 
-        out_name = f"{_safe_name(function_id)}.{extension if payload_type == 'base64' else 'txt'}"
+        safe_extension = _safe_name(extension).lstrip("._") or "bin"
+        out_name = f"{_safe_name(function_id)}.{safe_extension if payload_type == 'base64' else 'txt'}"
         output_path = os.path.join(out_dir, out_name)
         output_path = self.resolve_output_path(output_path, conflict_resolution="timestamp")
 

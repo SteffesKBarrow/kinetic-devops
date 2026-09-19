@@ -328,13 +328,14 @@ class KineticBaseClient(KineticCore):
         
         raise ValueError(f"Unknown conflict_resolution strategy: {strategy}")
 
-    def execute_request(self, method: str, url: str, payload: Any = None, 
-                        params: Optional[str] = None, extra_headers: Optional[Dict] = None) -> Dict:
+    def execute_request(self, method: str, url: str, payload: Any = None,
+                        params: Optional[str] = None, extra_headers: Optional[Dict] = None,
+                        company: Optional[str] = None) -> Dict:
         # Use centralized header builder from KineticCore
         headers = self.build_headers(
             token=self.config['token'],
             api_key=self.config['api_key'],
-            company=self.config['company']
+            company=company if company else self.config['company']
         )
         
         if extra_headers:

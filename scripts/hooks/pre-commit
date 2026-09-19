@@ -36,10 +36,6 @@ from pathlib import Path
 
 SETTINGS_SERVICE = "kinetic-devops-settings"
 NOREPLY_ACCOUNT = "github-noreply-email"
-SENSITIVE_SCAN_EXCLUDES = (
-    "kinetic_devops/find_sensitive_data.py",
-    "tests/test_sensitive_data_scan_exclusions.py",
-)
 COMPANY_CODE_GROUPS = (
     ("S", "O", "L"),
     ("E", "S", "V"),
@@ -227,8 +223,6 @@ def run_sensitive_data_gate(repo_root, remote_scan=False):
         "--fail-on-findings",
         "--custom-pattern",
         _company_token_pattern(),
-        "--exclude",
-        *SENSITIVE_SCAN_EXCLUDES,
     ]
     if remote_scan:
         cmd.extend(["--no-keyring", "--history"])

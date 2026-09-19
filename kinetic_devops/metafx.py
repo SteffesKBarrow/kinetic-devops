@@ -46,7 +46,8 @@ class KineticMetafetcher(KineticBaseClient):
         return f"{self.config['url'].rstrip('/')}/api/v2/odata/{target_co}/Ice.Lib.MetaFXSvc/{method_name}"
 
     def call_service(self, method_name: str, payload: Optional[Dict[str, Any]] = None, company: str = "") -> Dict[str, Any]:
-        return self.execute_request("POST", self._service_url(method_name, company=company), payload=payload or {})
+        target_co = company or self.config["company"]
+        return self.execute_request("POST", self._service_url(method_name, company=target_co), payload=payload or {}, company=target_co)
 
     def get_layers(
         self,

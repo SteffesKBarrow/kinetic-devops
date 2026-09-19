@@ -23,8 +23,8 @@ class KineticEFxService(KineticBaseClient):
         # Construct the EFx endpoint: /api/v2/efx/{company}/{library}/{function}
         url = f"{self.config['url'].rstrip('/')}/api/v2/efx/{target_co}/{library}/{function}"
         
-        headers = self.mgr.get_auth_headers(self.config)
-        
+        headers = self.mgr.get_auth_headers({**self.config, "company": target_co})
+
         # EFx calls are POST requests
         response = requests.post(url, json=input_data or {}, headers=headers, timeout=120)
         

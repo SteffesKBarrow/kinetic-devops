@@ -29,8 +29,13 @@ if (Test-Path "$VenvPath\Scripts\Activate.ps1") {
     Write-Host "No venv at '$VenvPath', using system Python."
 }
 
-# 3. Set PYTHONPATH so the helper scripts can import kinetic_devops
-$env:PYTHONPATH = $rootDir
+# 3. Prepend repo root to PYTHONPATH so the helper scripts can import kinetic_devops,
+#    without discarding any existing entries.
+if ($env:PYTHONPATH) {
+    $env:PYTHONPATH = "$rootDir$([System.IO.Path]::PathSeparator)$env:PYTHONPATH"
+} else {
+    $env:PYTHONPATH = $rootDir
+}
 
 # Optional local AI settings live in a separate, ignored file.
 $localAiConfig = Join-Path $scriptDir 'ai_env.local.ps1'

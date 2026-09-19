@@ -25,7 +25,7 @@ GENERIC_PATTERNS = {
     # Generic Base64-like strings often used for keys/secrets.
     # Final reporting is filtered through heuristics to suppress identifier noise.
     "GENERIC_BASE64_32": re.compile(r'["\']([A-Za-z0-9+/_-]{24,}={0,2})["\']'),
-    "PRIVATE_KEY_BLOCK": re.compile(r'PRIVATE KEY'),
+    "PRIVATE_KEY_BLOCK": re.compile(r'PRIVATE KEY'),  # kd-sensitive-scan-ignore-line: pattern definition, not a secret
 }
 
 CAMEL_CASE_RE = re.compile(r'^(?:[A-Z][a-z0-9]+)+(?:[A-Z][a-z0-9]+)*$|^[a-z]+(?:[A-Z][a-z0-9]+)+$')
@@ -57,6 +57,38 @@ BINARY_EXTENSIONS = {
     '.pdf', '.doc', '.docx', '.xls', '.xlsx',
     '.zip', '.tar', '.gz', '.7z', '.rar'
 }
+
+
+class ScanError(RuntimeError):
+    """Raised when a requested scan could not complete, so callers can fail closed."""
+
+
+def _repo_relative_include_path(start_path: str, include_path: str) -> str:
+    """Normalize an include path against the git repo root.
+
+    Git diff/log/show output paths are always repo-relative, but callers may pass
+    ``include_path`` as an absolute path or one relative to the current working
+    directory. Resolving it against the repo root keeps ``_path_is_included``
+    matching real scan output instead of silently filtering everything out.
+    """
+    normalized = _normalize_path_for_match(include_path)
+    if normalized in {"", "."}:
+        return ""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--show-toplevel'],
+            cwd=start_path, capture_output=True, text=True, check=True,
+        )
+        repo_root = result.stdout.strip()
+        if not repo_root:
+            return normalized
+        abs_include = os.path.abspath(include_path)
+        rel = os.path.relpath(abs_include, repo_root)
+        if rel.startswith(".."):
+            return normalized
+        return _normalize_path_for_match(rel)
+    except Exception:
+        return normalized
 
 
 def _normalize_path_for_match(path: str) -> str:
@@ -189,11 +221,20 @@ def _should_report_generic_base64(
     return len(decoded) >= max(1, int(min_decoded_bytes))
 
 
+# Inline marker for narrowly suppressing a known false positive on a single line
+# (e.g. a pattern definition or test fixture that looks like a secret but isn't).
+# Unlike a path-level --exclude, this only silences the one annotated line, so a
+# real secret added elsewhere in the same file is still caught.
+SUPPRESS_MARKER = "kd-sensitive-scan-ignore-line"
+
+
 def _collect_line_matches(
     line: str,
     patterns: Dict[str, re.Pattern],
     generic_base64_options: Dict[str, Any] | None = None,
 ) -> List[Tuple[str, str]]:
+    if SUPPRESS_MARKER in line:
+        return []
     findings: List[Tuple[str, str]] = []
     options = generic_base64_options or {}
 
@@ -316,9 +357,7 @@ def scan_git_history(
     findings = []
     print("Scanning git history (this may take a moment)...")
     exclude_tokens = _normalize_exclude_tokens(exclude_dirs)
-    include_token = _normalize_path_for_match(include_path)
-    if include_token in {"", "."}:
-        include_token = ""
+    include_token = _repo_relative_include_path(start_path, include_path)
     try:
         # Scan patches without context lines
         cmd = ['git', 'log', '-p', '--unified=0']
@@ -346,8 +385,13 @@ def scan_git_history(
                 findings.append((f"COMMIT: {current_commit} ({current_file})", 0, pattern_name, content.strip()[:100]))
                     
         process.wait()
+        if process.returncode != 0:
+            stderr_output = process.stderr.read() if process.stderr else ""
+            raise ScanError(f"git log exited {process.returncode}: {stderr_output}")
+    except ScanError:
+        raise
     except Exception as e:
-        print(f"Error scanning git history: {e}")
+        raise ScanError(f"Error scanning git history: {e}") from e
     return findings
 
 def scan_git_diff(
@@ -363,9 +407,7 @@ def scan_git_diff(
     diff_type = "staged" if staged else "unstaged"
     print(f"Scanning {diff_type} git changes...")
     exclude_tokens = _normalize_exclude_tokens(exclude_dirs)
-    include_token = _normalize_path_for_match(include_path)
-    if include_token in {"", "."}:
-        include_token = ""
+    include_token = _repo_relative_include_path(start_path, include_path)
     try:
         # Scan diffs without context lines to isolate added secrets
         cmd = ['git', 'diff', '--unified=0']
@@ -392,8 +434,13 @@ def scan_git_diff(
                 for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
                     findings.append((f"DIFF ({diff_type}): {current_file}", 0, pattern_name, content.strip()[:100]))
         process.wait()
+        if process.returncode != 0:
+            stderr_output = process.stderr.read() if process.stderr else ""
+            raise ScanError(f"git diff exited {process.returncode}: {stderr_output}")
+    except ScanError:
+        raise
     except Exception as e:
-        print(f"Error scanning git diff: {e}")
+        raise ScanError(f"Error scanning git diff: {e}") from e
     return findings
 
 def scan_git_commit(
@@ -408,9 +455,7 @@ def scan_git_commit(
     findings = []
     print(f"Scanning commit {commit_hash}...")
     exclude_tokens = _normalize_exclude_tokens(exclude_dirs)
-    include_token = _normalize_path_for_match(include_path)
-    if include_token in {"", "."}:
-        include_token = ""
+    include_token = _repo_relative_include_path(start_path, include_path)
     try:
         cmd = ['git', 'show', '--unified=0', commit_hash]
         process = subprocess.Popen(cmd, cwd=start_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
@@ -432,11 +477,12 @@ def scan_git_commit(
                     findings.append((f"COMMIT: {commit_hash[:7]} ({current_file})", 0, pattern_name, content.strip()[:100]))
         process.wait()
         if process.returncode != 0:
-            stderr_output = process.stderr.read()
-            print(f"Error scanning commit {commit_hash}: {stderr_output}")
-
+            stderr_output = process.stderr.read() if process.stderr else ""
+            raise ScanError(f"Error scanning commit {commit_hash}: {stderr_output}")
+    except ScanError:
+        raise
     except Exception as e:
-        print(f"Error scanning commit {commit_hash}: {e}")
+        raise ScanError(f"Error scanning commit {commit_hash}: {e}") from e
     return findings
 
 def scan_git_stashes(
@@ -450,9 +496,7 @@ def scan_git_stashes(
     findings = []
     print("Scanning git stashes...")
     exclude_tokens = _normalize_exclude_tokens(exclude_dirs)
-    include_token = _normalize_path_for_match(include_path)
-    if include_token in {"", "."}:
-        include_token = ""
+    include_token = _repo_relative_include_path(start_path, include_path)
     try:
         stash_list_result = subprocess.run(['git', 'stash', 'list'], cwd=start_path, capture_output=True, text=True)
         if stash_list_result.returncode != 0:
@@ -485,8 +529,13 @@ def scan_git_stashes(
                     for pattern_name, _ in _collect_line_matches(content, patterns, generic_base64_options):
                         findings.append((f"STASH: {stash_ref} ({current_file})", 0, pattern_name, content.strip()[:100]))
             process.wait()
+            if process.returncode != 0:
+                stderr_output = process.stderr.read() if process.stderr else ""
+                raise ScanError(f"git stash show {stash_ref} exited {process.returncode}: {stderr_output}")
+    except ScanError:
+        raise
     except Exception as e:
-        print(f"Error scanning git stashes: {e}")
+        raise ScanError(f"Error scanning git stashes: {e}") from e
     return findings
 
 def find_sensitive_data(
@@ -550,11 +599,11 @@ def main():
     # Pattern Control
     parser.add_argument("--no-keyring", action="store_true", help="Disable scanning for secrets from the keyring (enabled by default).")
     parser.add_argument("--no-generic-base64", action="store_true", help="Disable scanning for generic Base64 patterns.")
-    parser.add_argument("--include-camel-case-base64", action="store_true", help="Include CamelCase and PascalCase tokens in generic Base64 matching.")
-    parser.add_argument("--include-snake-case-base64", action="store_true", help="Include snake_case and UPPER_UNDERSCORE tokens in generic Base64 matching.")
-    parser.add_argument("--include-dash-separated-base64", action="store_true", help="Include dash-separated identifier tokens in generic Base64 matching.")
-    parser.add_argument("--include-path-like-base64", action="store_true", help="Include path-like slash-separated tokens in generic Base64 matching.")
-    parser.add_argument("--include-alpha-only-base64", action="store_true", help="Include alphabetic-only tokens in generic Base64 matching.")
+    parser.add_argument("--include-camel-case-base64", action="store_true", help="Include CamelCase and PascalCase tokens in generic Base64 matching.")  # kd-sensitive-scan-ignore-line: argparse flag name, not a secret
+    parser.add_argument("--include-snake-case-base64", action="store_true", help="Include snake_case and UPPER_UNDERSCORE tokens in generic Base64 matching.")  # kd-sensitive-scan-ignore-line: argparse flag name, not a secret
+    parser.add_argument("--include-dash-separated-base64", action="store_true", help="Include dash-separated identifier tokens in generic Base64 matching.")  # kd-sensitive-scan-ignore-line: argparse flag name, not a secret
+    parser.add_argument("--include-path-like-base64", action="store_true", help="Include path-like slash-separated tokens in generic Base64 matching.")  # kd-sensitive-scan-ignore-line: argparse flag name, not a secret
+    parser.add_argument("--include-alpha-only-base64", action="store_true", help="Include alphabetic-only tokens in generic Base64 matching.")  # kd-sensitive-scan-ignore-line: argparse flag name, not a secret
     parser.add_argument("--base64-min-decoded-bytes", type=int, default=12, help="Minimum decoded byte length required for generic Base64 findings.")
     parser.add_argument("--custom-pattern", nargs='+', default=[], help="Define one or more custom regex patterns to scan for.")
 
@@ -629,70 +678,78 @@ def main():
     print(f"Scanning {len(files)} files...")
     findings.extend(find_sensitive_data(files, all_patterns, generic_base64_options=generic_base64_options))
 
+    scan_failures = []
+
+    def _run_git_scan(fn, *fn_args, **fn_kwargs):
+        try:
+            findings.extend(fn(*fn_args, **fn_kwargs))
+        except ScanError as e:
+            print(f"❌ {e}")
+            scan_failures.append(str(e))
+
     if args.history:
-        findings.extend(
-            scan_git_history(
-                args.path,
-                all_patterns,
-                exclude_dirs=exclude_dirs,
-                include_path=args.path,
-                generic_base64_options=generic_base64_options,
-            )
+        _run_git_scan(
+            scan_git_history,
+            args.path,
+            all_patterns,
+            exclude_dirs=exclude_dirs,
+            include_path=args.path,
+            generic_base64_options=generic_base64_options,
         )
 
     if args.diff:
-        findings.extend(
-            scan_git_diff(
-                args.path,
-                all_patterns,
-                exclude_dirs=exclude_dirs,
-                staged=False,
-                include_path=args.path,
-                generic_base64_options=generic_base64_options,
-            )
+        _run_git_scan(
+            scan_git_diff,
+            args.path,
+            all_patterns,
+            exclude_dirs=exclude_dirs,
+            staged=False,
+            include_path=args.path,
+            generic_base64_options=generic_base64_options,
         )
 
     if args.staged:
-        findings.extend(
-            scan_git_diff(
-                args.path,
-                all_patterns,
-                exclude_dirs=exclude_dirs,
-                staged=True,
-                include_path=args.path,
-                generic_base64_options=generic_base64_options,
-            )
+        _run_git_scan(
+            scan_git_diff,
+            args.path,
+            all_patterns,
+            exclude_dirs=exclude_dirs,
+            staged=True,
+            include_path=args.path,
+            generic_base64_options=generic_base64_options,
         )
 
     if args.commit:
-        findings.extend(
-            scan_git_commit(
-                args.path,
-                args.commit,
-                all_patterns,
-                exclude_dirs=exclude_dirs,
-                include_path=args.path,
-                generic_base64_options=generic_base64_options,
-            )
+        _run_git_scan(
+            scan_git_commit,
+            args.path,
+            args.commit,
+            all_patterns,
+            exclude_dirs=exclude_dirs,
+            include_path=args.path,
+            generic_base64_options=generic_base64_options,
         )
 
     if args.git_stash:
-        findings.extend(
-            scan_git_stashes(
-                args.path,
-                all_patterns,
-                exclude_dirs=exclude_dirs,
-                include_path=args.path,
-                generic_base64_options=generic_base64_options,
-            )
+        _run_git_scan(
+            scan_git_stashes,
+            args.path,
+            all_patterns,
+            exclude_dirs=exclude_dirs,
+            include_path=args.path,
+            generic_base64_options=generic_base64_options,
         )
+
+    if scan_failures and args.fail_on_findings:
+        print(f"\n❌ {len(scan_failures)} requested scan(s) could not complete; failing closed.")
+        return 1
 
     # --- Report Findings ---
     if findings:
         print("\nSensitive data found:")
         for location, line_num, pattern, match in findings:
             loc_str = f"{location}:{line_num}" if line_num > 0 else location
-            print(f"  - {loc_str} [{pattern}]\n    Match: {match[:60]}...")
+            print(f"  - {loc_str} [{pattern}]\n    Match: <redacted, {len(match)} chars>")
         if args.fail_on_findings:
             return 1
     else:

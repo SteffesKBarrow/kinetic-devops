@@ -1673,7 +1673,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     known_commands = {"migrate", "validate", "refresh-import", "export-eas"}
 
-    if raw_args and raw_args[0] not in known_commands and raw_args[0] not in {"-h", "--help"}:
+    if not raw_args or (raw_args[0] not in known_commands and raw_args[0] not in {"-h", "--help"}):
         raw_args = ["migrate", *raw_args]
 
     args = parser.parse_args(raw_args)
