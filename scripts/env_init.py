@@ -38,6 +38,7 @@ class KineticEnvManager:
         token = secrets.token_hex(8)
         self.temp_file = self.temp_dir / f"env_vars_{token}.bat"
         self.ps1_file = self.temp_dir / f"env_vars_{token}.ps1"
+        self.sh_file = self.temp_dir / f"env_vars_{token}.sh"
         self.env_nickname = env_nickname
         self.mgr = KineticConfigManager()
         # 3. SQLite DB location logic
@@ -51,7 +52,7 @@ class KineticEnvManager:
 
         now = time.time()
 
-        for pattern in ("env_vars_*.bat", "env_vars_*.ps1"):
+        for pattern in ("env_vars_*.bat", "env_vars_*.ps1", "env_vars_*.sh"):
             for item in self.temp_dir.glob(pattern):
                 try:
                     age = int(now - item.stat().st_mtime)
@@ -134,7 +135,7 @@ def main():
         success = True
         paths = [p for p in args.cleanup_path if p]
         if not paths:
-            paths = [str(env_manager.temp_file), str(env_manager.ps1_file)]
+            paths = [str(env_manager.temp_file), str(env_manager.ps1_file), str(env_manager.sh_file)]
         for item in paths:
             if not env_manager.secure_wipe_and_delete(item):
                 success = False
@@ -170,9 +171,16 @@ def main():
             except Exception:
                 pass
         else:
-            # Unix-like: User can source $(python script.py)
-            for cmd in commands:
-                print(cmd)
+            # Unix-like: write exports to a secure, caller-owned-only temp
+            # file and emit its path, instead of printing commands for the
+            # caller to eval. eval-ing arbitrary stdout is an injection risk
+            # if any exported value ever contains shell metacharacters.
+            sh_path = env_manager.sh_file
+            fd = os.open(str(sh_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as sf:
+                for cmd in commands:
+                    sf.write(f"{cmd}\n")
+            print(f"WRITTEN_SH={sh_path}")
                 
     except Exception as e:
         print(f"PYTHON CRASH: {e}", file=sys.stderr)
