@@ -57,9 +57,9 @@ DEFAULT_NATIVE_EXPORT_PLAN = [
     {
         "id": "efx_library_list",
         "method": "POST",
-        "endpoint": "/api/v2/odata/{company}/Ice.BO.EfxLibraryDesignerSvc/GetLibraryList",
+        "endpoint": "/api/v2/odata/{company}/Ice.Lib.EfxLibraryDesignerSvc/GetLibraryList",
         "body": {
-            "searchOptions": {
+            "options": {
                 "kind": 1,
                 "startsWith": "",
                 "rollOutMode": 2,
@@ -272,11 +272,11 @@ class KineticExportAllService(KineticEFxService):
         target_co = company if company else self.config["company"]
         endpoint = (
             f"{self.config['url'].rstrip('/')}/api/v2/odata/{target_co}/"
-            "Ice.BO.EfxLibraryDesignerSvc/GetLibrary"
+            "Ice.Lib.EfxLibraryDesignerSvc/GetLibrary"
         )
 
         headers = self.mgr.get_auth_headers({**self.config, "company": target_co})
-        payload = {"libraryID": library}
+        payload = {"libraryId": library}
 
         self._last_discovery_error = {}
 
