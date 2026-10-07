@@ -7,6 +7,7 @@ CLI_MODULES = [
     {"module": "baq", "script": "baq.py", "router": "baq"},
     {"module": "boreader", "script": "boreader.py", "router": None},
     {"module": "efx", "script": "efx.py", "router": "efx"},
+    {"module": "efx_library", "script": "efx_library.py", "router": None},
     {"module": "export_all", "script": "export_all.py", "router": "export"},
     {"module": "file_service", "script": "file_service.py", "router": None},
     {"module": "find_sensitive_data", "script": "find_sensitive_data.py", "router": "find"},
