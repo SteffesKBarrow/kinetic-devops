@@ -61,6 +61,15 @@ SERVICE_API_KEY = "epicor-kinetic-apikey"
 SERVICE_SERVERS = "epicor-kinetic-servers"
 DEFAULT_TTL_SEC = 1200
 
+
+class SessionResolutionError(RuntimeError):
+    """Raised when an explicitly-named environment's session can't be resolved.
+
+    This intentionally never falls back to a different environment -- callers
+    asked for a specific one and get a loud failure instead of silent drift.
+    """
+
+
 class KineticConfigManager(KineticCore):
     """Manager for Kinetic server configs and token lifecycle stored in keyring.
 
@@ -485,22 +494,34 @@ class KineticConfigManager(KineticCore):
         else:
             print(f"export {key}=\"{display}\"")
 
-    def use(self, context: any = None):
+    def use(self, context: any = None, user: str = ""):
         """CLI ACTION: Selects environment and prints SET/export lines."""
+        user = (user or "").strip()
+        if user:
+            sys.stderr.write(
+                "⚠️  --user was passed on the command line; it can be captured in "
+                "shell history and is visible to other local users via process "
+                "listings (ps/Task Manager). Prefer the KIN_USER environment "
+                "variable instead.\n"
+            )
+
         # 1. If no context (env) provided via CLI, trigger the interactive prompt
         if not context:
             env_name, user_id, co_id = self.prompt_for_env()
             context = (env_name, user_id, co_id)
-        
+        elif user:
+            context = (context, user)
+
         # 2. Resolve the full config using the standardized "Triple" fields
         # This fixes the TypeError by providing the 'fields' argument
         config_data = self.get_active_config(
-            context, 
+            context,
             fields=("url", "token", "api_key", "company", "nickname")
         )
 
         if not config_data[0]:
-            sys.stderr.write(f"Error: Could not resolve session for context '{context}'.\n")
+            env_label = context[0] if isinstance(context, (tuple, list)) else context
+            sys.stderr.write(f"Error: Could not resolve session for '{env_label}'.\n")
             return
 
         # Map results for display
@@ -509,6 +530,65 @@ class KineticConfigManager(KineticCore):
         # 3. Print environment variables for the shell
         print(f"\n# Active Session: {nickname} (Co: {company})")
         self._print_env_var("KIN_COMPANY", company)
+
+    def _select_session_for_env(self, selected_env: str, env_cfg: Dict) -> Tuple[str, str]:
+        """Interactively select an existing session or enter a new Epicor
+        User ID for an already-known environment, then pick a company if
+        more than one is configured.
+
+        This never re-selects the environment itself -- it's shared by
+        prompt_for_env() (which picks the environment first) and
+        get_active_config()'s explicit-environment path (which already
+        knows the environment and must stay scoped to it).
+        """
+        sessions = env_cfg.get("sessions", []) or []
+        selected_user = None
+        if sessions:
+            print(f"\n👤 Sessions for {selected_env}:")
+            for i, user in enumerate(sessions, 1):
+                print(f"   {i}) {user}")
+            u_choice = input(f"Select Session (0-{len(sessions)}) [1]: ").strip() or "1"
+            if u_choice != "0":
+                selected_user = sessions[int(u_choice)-1]
+
+        # If no session was selected, insist on a non-empty user id input.
+        if not selected_user:
+            while True:
+                entered = input("Enter Epicor User ID: ").strip()
+                if entered:
+                    selected_user = entered
+                    break
+                print("User ID cannot be empty. Please enter your Epicor User ID.")
+
+        # SELECT COMPANY (Supports Direct ID or Numeric Selection)
+        raw_cos = env_cfg.get('company') or env_cfg.get('companies') or ""
+        available_cos = [c.strip() for c in str(raw_cos).split(',') if c.strip()]
+
+        if len(available_cos) > 1:
+            print(f"\n🏢 Select Company for {selected_env}:")
+            for i, co in enumerate(available_cos, 1):
+                print(f"  {i}) {co}")
+
+            choice = input(f"Selection (1-{len(available_cos)}) or enter ID [1]: ").strip() or "1"
+
+            # 1. Check if the user typed the ID directly (e.g., "ACME")
+            if choice.upper() in [c.upper() for c in available_cos]:
+                selected_co = next(c for c in available_cos if c.upper() == choice.upper())
+            else:
+                try:
+                    # 2. Otherwise, treat it as a numeric index
+                    idx = int(choice) - 1
+                    selected_co = available_cos[idx]
+                except (ValueError, IndexError):
+                    # 3. Fallback to first if input is garbage
+                    print(f"⚠️ Invalid selection. Defaulting to {available_cos[0]}")
+                    selected_co = available_cos[0]
+        else:
+            selected_co = available_cos[0] if available_cos else ""
+
+        # Lock choice into metadata
+        self.set_current_company(selected_env, selected_user, selected_co)
+        return selected_user, selected_co
 
     def prompt_for_env(self, passive: bool = False, prompt_reuse: bool = False) -> Tuple[str, str, str]:
         # 1. GLOBAL QUICK-CONNECT: Check the last session touched by ANY tool
@@ -573,55 +653,9 @@ class KineticConfigManager(KineticCore):
 
         if passive: return selected_env, "", ""
 
-        # 4. SELECT SESSION
-        sessions = env_cfg.get("sessions", [])
-        selected_user = None
-        if sessions:
-            print(f"\n👤 Sessions for {selected_env}:")
-            for i, user in enumerate(sessions, 1):
-                print(f"   {i}) {user}")
-            u_choice = input(f"Select Session (0-{len(sessions)}) [1]: ").strip() or "1"
-            if u_choice != "0":
-                selected_user = sessions[int(u_choice)-1]
-
-        # If no session was selected, insist on a non-empty user id input.
-        if not selected_user:
-            while True:
-                entered = input("Enter Epicor User ID: ").strip()
-                if entered:
-                    selected_user = entered
-                    break
-                print("User ID cannot be empty. Please enter your Epicor User ID.")
-
-        # 5. SELECT COMPANY (Supports Direct ID or Numeric Selection)
-        raw_cos = env_cfg.get('company') or env_cfg.get('companies') or ""
-        available_cos = [c.strip() for c in str(raw_cos).split(',') if c.strip()]
-        
-        if len(available_cos) > 1:
-            print(f"\n🏢 Select Company for {selected_env}:")
-            for i, co in enumerate(available_cos, 1):
-                print(f"  {i}) {co}")
-            
-            choice = input(f"Selection (1-{len(available_cos)}) or enter ID [1]: ").strip() or "1"
-            
-            # --- NEW LOGIC: Support Direct ID Input ---
-            # 1. Check if the user typed the ID directly (e.g., "ACME")
-            if choice.upper() in [c.upper() for c in available_cos]:
-                selected_co = next(c for c in available_cos if c.upper() == choice.upper())
-            else:
-                try:
-                    # 2. Otherwise, treat it as a numeric index
-                    idx = int(choice) - 1
-                    selected_co = available_cos[idx]
-                except (ValueError, IndexError):
-                    # 3. Fallback to first if input is garbage
-                    print(f"⚠️ Invalid selection. Defaulting to {available_cos[0]}")
-                    selected_co = available_cos[0]
-        else:
-            selected_co = available_cos[0] if available_cos else ""
-
-        # Lock choice into metadata
-        self.set_current_company(selected_env, selected_user, selected_co)
+        # 4 & 5. SELECT SESSION AND COMPANY (shared with get_active_config's
+        # explicit-environment path -- see _select_session_for_env)
+        selected_user, selected_co = self._select_session_for_env(selected_env, env_cfg)
         return selected_env, selected_user, selected_co
 
     def logout(self, env_name: str):
@@ -1232,13 +1266,20 @@ class KineticConfigManager(KineticCore):
     def get_active_config(self, context: any, fields: Tuple[str, ...]) -> Tuple:
         """
         Accepts context as:
-        - "nickname" (Uses last active user/company)
+        - "" / None (no environment named: reuse the last globally-active session)
+        - "nickname" (Uses last active user/company for that environment)
         - ("nickname", "user_id") (Uses last active company)
         - {"env": "...", "user": "...", "co": "..."} (Precise)
+
+        When an environment is explicitly named, resolution stays strictly
+        scoped to it. It will never silently substitute a different
+        environment via the global "last active" pointer -- ambiguous or
+        unresolvable sessions for a named environment raise
+        SessionResolutionError instead of drifting.
         """
         # --- 1. UNPACK CONTEXT ---
         env_name, user_id, company_id = None, None, None
-        
+
         if isinstance(context, str):
             env_name = context
         elif isinstance(context, (tuple, list)):
@@ -1250,22 +1291,53 @@ class KineticConfigManager(KineticCore):
             user_id = context.get('user') or context.get('user_id')
             company_id = context.get('co') or context.get('company')
 
+        explicit_env = bool(env_name)
+
+        # Preferred way to disambiguate a session without leaking usernames
+        # into shell history: set KIN_USER rather than passing it on a CLI
+        # flag. Only used as a fallback -- an explicit user_id already in
+        # context (e.g. from a --user flag) wins.
+        if not user_id:
+            env_user = os.getenv("KIN_USER", "").strip()
+            if env_user:
+                user_id = env_user
+
         # --- 2. RESOLVE MISSING PIECES ---
         servers = self._get_server_dict()
         name, cfg = self._find_env(servers, env_name)
         if not cfg: return tuple(None for _ in fields)
 
-        # Fallback for user: Use first session if not provided
+        # Fallback for user: Use the session if there's exactly one.
         if not user_id:
-            sessions = cfg.get("sessions", [])
-            if sessions:
+            sessions = cfg.get("sessions", []) or []
+            if len(sessions) == 1:
                 user_id = sessions[0]
+            elif explicit_env:
+                # An environment was explicitly named -- stay scoped to it
+                # instead of falling back to prompt_for_env(), which would
+                # silently resolve a DIFFERENT environment via the global
+                # last-active pointer.
+                if sys.stdin.isatty() and sys.stdout.isatty():
+                    # Interactive: prompt for (or create) a session scoped to
+                    # this environment only -- never re-picks the environment.
+                    user_id, company_id = self._select_session_for_env(name, cfg)
+                else:
+                    # Non-interactive: fail closed and loud. No session
+                    # identifiers are included in the message.
+                    reason = "multiple sessions recorded" if sessions else "no sessions recorded"
+                    raise SessionResolutionError(
+                        f"Cannot resolve a session for '{name}': {reason}. "
+                        f"Set KIN_USER (preferred) or pass --user to disambiguate."
+                    )
             else:
-                # No user provided AND no saved sessions: must prompt interactively
+                # No environment was named at all: reuse the last globally-
+                # active session. This is the only path allowed to pick a
+                # different environment than what was asked for, because
+                # nothing specific was asked for.
                 env_name, user_id, company_id = self.prompt_for_env()
                 name, cfg = self._find_env(servers, env_name)
                 if not cfg: return tuple(None for _ in fields)
-        
+
         if not user_id: return tuple(None for _ in fields)
 
         # Resolve token & meta
@@ -1821,6 +1893,13 @@ def main():
         p = subparsers.add_parser(cmd)
         if cmd == "use":
             p.add_argument("env", nargs="?", default=None)
+            p.add_argument(
+                "--user",
+                default="",
+                help="Disambiguate which session to use for this environment. "
+                     "Prefer the KIN_USER environment variable instead -- this "
+                     "flag can leak into shell history and process listings.",
+            )
         else:
             p.add_argument("env")
 
@@ -1933,7 +2012,7 @@ def main():
         elif args.command == "find-orphans": mgr.find_orphans(delete=args.delete)
         elif args.command == "sync-companies": mgr.sync_companies(args.env)
         elif args.command == "inspect": mgr.inspect(args.env)
-        elif args.command == "use": mgr.use(args.env)
+        elif args.command == "use": mgr.use(args.env, user=args.user)
         elif args.command == "delete": mgr.delete(args.env)
         elif args.command == "logout": mgr.logout(args.env)
         else: parser.print_help()
