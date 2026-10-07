@@ -22,6 +22,7 @@ PACKAGE_MODULE_MATRIX = {
     "boreader",
     "crypto",
     "efx",
+    "efx_library",
     "export_all",
     "file_service",
     "find_sensitive_data",
