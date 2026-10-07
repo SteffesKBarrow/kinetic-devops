@@ -13,6 +13,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,25 @@ else:
 
 
 SERVICE_NAME = "Ice.Lib.EfxLibraryDesignerSvc"
+
+
+def _safe_path_component(value: str) -> str:
+    """Strip path separators and traversal sequences from a server-supplied
+    ID before using it as a directory/filename component. The original,
+    unmodified value should still be used for API calls -- this is only
+    for constructing local output paths safely."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    cleaned = cleaned.strip(".") or "library"
+    return cleaned
+
+
+def _resolve_contained_path(out_dir: str, *parts: str) -> str:
+    """Join parts under out_dir and verify the result doesn't escape it."""
+    out_dir_abs = os.path.abspath(out_dir)
+    candidate = os.path.abspath(os.path.join(out_dir_abs, *parts))
+    if candidate != out_dir_abs and not candidate.startswith(out_dir_abs + os.sep):
+        raise ValueError(f"Resolved path '{candidate}' escapes output directory '{out_dir_abs}'.")
+    return candidate
 
 
 class KineticEfxLibraryService(KineticBaseClient):
@@ -141,7 +161,7 @@ class KineticEfxLibraryService(KineticBaseClient):
         b64_data = self.export_library(library_id, company=company, **export_kwargs)
         if not b64_data:
             raise ValueError(f"No export payload returned for library '{library_id}'.")
-        resolved = self.resolve_output_path(out_path, conflict_resolution="timestamp")
+        resolved = self.resolve_output_path(out_path)
         os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
         with open(resolved, "wb") as f:
             f.write(base64.b64decode(b64_data))
@@ -195,9 +215,15 @@ class KineticEfxLibraryService(KineticBaseClient):
             if skip_disabled and lib.get("Disabled"):
                 results.append({"library_id": library_id, "skipped": "disabled"})
                 continue
-            lib_dir = os.path.join(out_dir, library_id)
-            out_path = os.path.join(lib_dir, f"{library_id}.efxlib")
+            safe_id = _safe_path_component(library_id)
             try:
+                out_path = _resolve_contained_path(out_dir, safe_id, f"{safe_id}.efxlib")
+            except ValueError as exc:
+                results.append({"library_id": library_id, "success": False, "error": str(exc)})
+                continue
+            try:
+                # The real, unmodified library_id is still used for the API
+                # call -- only the local output path is sanitized.
                 resolved = self.export_library_to_file(library_id, out_path, company=company)
                 results.append({"library_id": library_id, "output_file": resolved, "success": True})
             except Exception as exc:
@@ -246,15 +272,18 @@ def main() -> None:
         elif args.command == "export-all":
             results = service.export_all_libraries(args.out_dir)
             ok = sum(1 for r in results if r.get("success"))
+            failed = [r for r in results if not r.get("success") and not r.get("skipped")]
             print(f"✅ Exported {ok}/{len(results)} libraries to {args.out_dir}")
-            for r in results:
-                if not r.get("success") and not r.get("skipped"):
-                    print(f"  ❌ {r['library_id']}: {r.get('error')}")
+            for r in failed:
+                print(f"  ❌ {r['library_id']}: {r.get('error')}")
+            if failed:
+                sys.exit(1)
         elif args.command == "import":
             result = service.import_library_from_file(args.file_path, new_library_id=args.new_library_id, overwrite_mode=args.overwrite_mode)
             errors = result.get("BOUpdError") or []
             if errors:
                 print(f"⚠️  Import completed with {len(errors)} error(s): {errors}")
+                sys.exit(1)
             else:
                 print("✅ Import completed with no errors.")
     except Exception as e:

@@ -516,7 +516,7 @@ class KineticConfigManager(KineticCore):
         # This fixes the TypeError by providing the 'fields' argument
         config_data = self.get_active_config(
             context,
-            fields=("url", "token", "api_key", "company", "nickname")
+            fields=("url", "token", "api_key", "company", "nickname", "user_id")
         )
 
         if not config_data[0]:
@@ -525,13 +525,32 @@ class KineticConfigManager(KineticCore):
             return
 
         # Map results for display
-        _url, _token, _api_key, company, nickname = config_data
+        _url, _token, api_key, company, nickname, resolved_user_id = config_data
 
-        # 3. Print environment variables for the shell
+        # 3. Print environment variables for the shell. Emit the same
+        # selectors KineticBaseClient.__init__ reads (KINETIC_SESSION_*) so
+        # that capturing this output actually activates the session for
+        # other tools, not just KIN_COMPANY.
         print(f"\n# Active Session: {nickname} (Co: {company})")
         self._print_env_var("KIN_COMPANY", company)
+        self._print_env_var("KINETIC_SESSION_ENV", nickname)
+        self._print_env_var("KINETIC_SESSION_USER", resolved_user_id)
+        self._print_env_var("KINETIC_SESSION_CO", company)
 
-    def _select_session_for_env(self, selected_env: str, env_cfg: Dict) -> Tuple[str, str]:
+        # Resolving from a cached token (no fresh fetch) never calls
+        # touch_session, so LAST_GLOBAL_SESSION can still point at a
+        # different, previously-active session. Update it explicitly so a
+        # bare `use` (no args) elsewhere picks up what was just activated.
+        if resolved_user_id and api_key:
+            try:
+                slot = self._get_token_key(nickname, resolved_user_id, api_key)
+                keyring.set_password("KineticSDK", "LAST_GLOBAL_SESSION", slot)
+            except Exception:
+                pass
+
+    def _select_session_for_env(
+        self, selected_env: str, env_cfg: Dict, preferred_company: str = ""
+    ) -> Tuple[str, str]:
         """Interactively select an existing session or enter a new Epicor
         User ID for an already-known environment, then pick a company if
         more than one is configured.
@@ -540,6 +559,10 @@ class KineticConfigManager(KineticCore):
         prompt_for_env() (which picks the environment first) and
         get_active_config()'s explicit-environment path (which already
         knows the environment and must stay scoped to it).
+
+        If preferred_company is already set (e.g. an explicit --company
+        was supplied by the caller), company selection is skipped entirely
+        so an interactive prompt here never overwrites it.
         """
         sessions = env_cfg.get("sessions", []) or []
         selected_user = None
@@ -561,6 +584,11 @@ class KineticConfigManager(KineticCore):
                 print("User ID cannot be empty. Please enter your Epicor User ID.")
 
         # SELECT COMPANY (Supports Direct ID or Numeric Selection)
+        if preferred_company:
+            selected_co = preferred_company
+            self.set_current_company(selected_env, selected_user, selected_co)
+            return selected_user, selected_co
+
         raw_cos = env_cfg.get('company') or env_cfg.get('companies') or ""
         available_cos = [c.strip() for c in str(raw_cos).split(',') if c.strip()]
 
@@ -1320,7 +1348,11 @@ class KineticConfigManager(KineticCore):
                 if sys.stdin.isatty() and sys.stdout.isatty():
                     # Interactive: prompt for (or create) a session scoped to
                     # this environment only -- never re-picks the environment.
-                    user_id, company_id = self._select_session_for_env(name, cfg)
+                    # An explicitly-supplied company (e.g. via --company) is
+                    # passed through so the prompt never overwrites it.
+                    user_id, company_id = self._select_session_for_env(
+                        name, cfg, preferred_company=company_id or ""
+                    )
                 else:
                     # Non-interactive: fail closed and loud. No session
                     # identifiers are included in the message.

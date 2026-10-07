@@ -22,9 +22,19 @@ def _bare_manager() -> KineticConfigManager:
 class TestGetActiveConfigScoping(unittest.TestCase):
     def setUp(self) -> None:
         os.environ.pop("KIN_USER", None)
+        # Default both streams to non-interactive so the "fails closed"
+        # tests exercise that branch regardless of whether this suite
+        # happens to run attached to a real terminal. The two interactive
+        # tests override these explicitly within their own `with` blocks.
+        self._stdin_isatty_patch = patch.object(sys.stdin, "isatty", return_value=False)
+        self._stdout_isatty_patch = patch.object(sys.stdout, "isatty", return_value=False)
+        self._stdin_isatty_patch.start()
+        self._stdout_isatty_patch.start()
 
     def tearDown(self) -> None:
         os.environ.pop("KIN_USER", None)
+        self._stdin_isatty_patch.stop()
+        self._stdout_isatty_patch.stop()
 
     def test_explicit_env_single_session_resolves_without_prompting(self):
         mgr = _bare_manager()
@@ -91,7 +101,27 @@ class TestGetActiveConfigScoping(unittest.TestCase):
             mgr.get_active_config("pilot", fields=("url", "nickname"))
 
         mock_prompt.assert_not_called()
-        mock_select.assert_called_once_with("pilot", servers["pilot"])
+        mock_select.assert_called_once_with("pilot", servers["pilot"], preferred_company="")
+
+    def test_explicit_company_survives_interactive_session_prompt(self):
+        """An explicitly-supplied company (e.g. via --company, arriving as
+        the 3rd element of a tuple context) must not be overwritten by the
+        interactive session-selection prompt for an ambiguous session."""
+        mgr = _bare_manager()
+        servers = {
+            "pilot": {"url": "https://pilot.example", "api_key": "key", "companies": "ACME,OTHER", "sessions": []}
+        }
+        with patch.object(mgr, "_get_server_dict", return_value=servers), \
+             patch.object(mgr, "_select_session_for_env", return_value=("newuser", "ACME")) as mock_select, \
+             patch.object(mgr, "_get_token_key", return_value="slot"), \
+             patch.object(mgr, "_get_token_meta", return_value=None), \
+             patch.object(mgr, "_fetch_token_kinetic", return_value="tok"), \
+             patch.object(sys.stdin, "isatty", return_value=True), \
+             patch.object(sys.stdout, "isatty", return_value=True):
+            result = mgr.get_active_config(("pilot", "", "ACME"), fields=("company",))
+
+        mock_select.assert_called_once_with("pilot", servers["pilot"], preferred_company="ACME")
+        self.assertEqual(result, ("ACME",))
 
     def test_explicit_env_multiple_sessions_interactive_prompts_scoped_pick(self):
         """Interactive + multiple sessions: prompt to pick among THIS
@@ -110,7 +140,7 @@ class TestGetActiveConfigScoping(unittest.TestCase):
             result = mgr.get_active_config("pilot", fields=("url", "nickname"))
 
         mock_prompt.assert_not_called()
-        mock_select.assert_called_once_with("pilot", servers["pilot"])
+        mock_select.assert_called_once_with("pilot", servers["pilot"], preferred_company="")
         self.assertEqual(result[1], "pilot")
 
     def test_kin_user_env_var_disambiguates_without_raising(self):
