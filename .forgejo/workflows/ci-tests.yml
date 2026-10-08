@@ -61,3 +61,21 @@ jobs:
 
       - name: Run regression suite
         run: python -m tests.test_runner
+
+  efx-syntax-check-tool-build:
+    name: EFx Syntax Check Tool Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Build syntax checker
+        run: dotnet build tools/efx_syntax_check -c Release

@@ -1,6 +1,7 @@
-# Git ignore file for project 
+# Git ignore file for project
 Data/
 bin/
+obj/
 exports/
 temp/
 tmp/
