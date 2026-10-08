@@ -106,14 +106,21 @@ The test runner includes automatic environment validation that checks:
 
 ## Test Coverage
 
-| Module | Tests | Status |
-|--------|-------|--------|
-| test_base_client_redaction | 3 | All Pass |
-| test_imports | 8 | All Pass |
-| test_cli | 3 | All Pass |
-| test_redaction | 7 | All Pass |
-| sdk_kinetic/test_basic | 1 | All Pass |
-| **Total** | **22** | **All Pass** |
+Run `uv run python -m pytest -q` for the current pass/fail count -- this file doesn't keep a static
+table of test counts since it goes stale the moment a test is added (this one has, repeatedly).
+
+### Module/Script/CLI Coverage Matrices
+
+Three files enforce an **exact-match** registry between declared modules and what's actually on disk,
+so nothing new ships without at least a smoke test:
+
+- `tests/test_module_coverage_matrix.py` -- `PACKAGE_MODULE_MATRIX` (every `kinetic_devops/*.py`) and
+  `SCRIPT_MODULE_MATRIX` (every `scripts/*.py`)
+- `tests/cli_matrix.py` / `test_cli_matrix_consistency.py` -- `CLI_MODULES` (every directly
+  CLI-runnable module) and the router-tool mapping in `kinetic_devops/__main__.py`
+
+If you add or remove a module, script, or CLI entrypoint, update the matching registry -- see
+[CONTRIBUTING.md](../CONTRIBUTING.md) for the full table of what maps to what.
 
 ## CI Integration
 

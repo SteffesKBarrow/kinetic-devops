@@ -7,9 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `kinetic_devops/efx_library.py`: EFx Function Library management (`Ice.Lib.EfxLibraryDesignerSvc`) --
+  `list`/`export`/`export-all`/`import` CLI subcommands, verified live against a real environment.
+- Per-function C# source extraction and push-back: `pull-source` extracts each function's embedded
+  `CustomCodeAction.Code` fragments into individual `.cs` files; `push-source` re-injects edited
+  fragments back via `ApplyChangesWithDiagnostics`. Verified live end-to-end (extract -> edit -> push
+  -> confirm -> revert) against Pilot.
+- `test-pilot` subcommand: explicit, Pilot-only, interactive-confirmation-required live execution of a
+  saved function (refuses to run unattended).
+- `tools/efx_syntax_check`: a Roslyn-based syntax-only validator for extracted EFx function C#, plus a
+  CI job that builds it on both GitHub and Forgejo.
+- `CONTRIBUTING.md`: coverage-matrix registration requirements, the current service-module pattern,
+  the live-verification-before-documenting principle, and the dual-remote (Forgejo/GitHub) push
+  convention.
+
 ### Changed
 - Dependency updates: integrated Dependabot upgrade for `urllib3` from `2.6.3` to `2.7.0` via `uv.lock`.
 - Project runtime requirement now targets Python `3.10+` (from `3.8+`) in package metadata and README.
+- `Documents/ARCHITECTURE.md`: corrected its service-module example, which documented a
+  `boreader_service.py`/`BOReaderService(base_url, headers)` pattern that no longer matches reality --
+  every current service module subclasses `KineticBaseClient` directly.
 
 ## [0.1.0a6] - 2026-09-09
 

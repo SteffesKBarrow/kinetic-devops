@@ -13,6 +13,7 @@
 - 🤖 **CI/CD Ready** — Designed for automation with environment variable support, programmatic APIs, blocking sensitive-data gates, and pre-commit hooks for local validation.
 - 📜 **Powerful CLI Tools** — Includes helper scripts for environment initialization and common administrative tasks like configuration syncing. Unified test runner includes built-in health validation.
 - 🧩 **Layer Lifecycle Operations** — Native MetaFX support for core layer import/delete operations (`ImportLayers` / `BulkDeleteLayers`) with structured error reports.
+- ⚙️ **EFx Function Library Management** — Export/import/list libraries, plus per-function C# source extraction and push-back for local editing.
 - 📦 **Modular architecture** — Extend with custom project submodules
 
 ## Quick Start
@@ -199,10 +200,47 @@ Current recreate behavior is intentionally focused on the Solution Workbench def
 
 `recreate` does not implicitly call `build` or `install`; those are explicit steps.
 
+### EFx Function Library Management
+
+Export/import/list EFx Function Libraries (`Ice.Lib.EfxLibraryDesignerSvc`), and pull/push individual
+functions' C# source for local editing:
+
+```powershell
+# List visible libraries
+python -m kinetic_devops.efx_library --env <ENV> --user <USER> list
+
+# Export a single library, or every visible library (one file per library)
+python -m kinetic_devops.efx_library --env <ENV> --user <USER> export <LibraryID> --out backup.efxlib
+python -m kinetic_devops.efx_library --env <ENV> --user <USER> export-all --out-dir backups/
+
+# Import a previously exported library
+python -m kinetic_devops.efx_library --env <ENV> --user <USER> import backup.efxlib --new-library-id CopyOfLib
+
+# Pull a library's functions as editable .cs files, edit one, push it back
+python -m kinetic_devops.efx_library --env <ENV> --user <USER> pull-source <LibraryID> --out-dir projects/libraries
+python -m kinetic_devops.efx_library --env <ENV> --user <USER> push-source <LibraryID> <FunctionID> --out-dir projects/libraries
+
+# Actually execute a saved function -- Pilot only, interactive confirmation required, never unattended
+python -m kinetic_devops.efx_library --env Pilot --user <USER> test-pilot <LibraryID> <FunctionID>
+```
+
+`pull-source` extracts each function's embedded C# (`CustomCodeAction.Code` fragments inside the
+function's directive graph) into one `.cs` file per code node, plus a `_body.xml` sidecar and a
+`_meta.json`. `push-source` re-injects edited `.cs` files back into a freshly-fetched copy of the
+function (not the local sidecar, to avoid clobbering concurrent changes) via
+`ApplyChangesWithDiagnostics`, and raises if the server reports any diagnostics.
+
+`tools/efx_syntax_check` is a Roslyn-based syntax-only validator for extracted `.cs` fragments
+(no semantic/type checking -- Epicor's runtime types aren't available outside the server).
+
+Note: pulled function source (actual customer business logic) is intentionally kept out of this repo
+-- `projects/` is gitignored. Store pulled libraries in a separate, dedicated location.
+
 See [examples/complete_flow.py](examples/complete_flow.py) for a complete auth → BAQ → results example.
 
 ## Documentation
 
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Contributor guide: coverage matrices, service module pattern, dual-remote push convention
 - [ARCHITECTURE.md](Documents/ARCHITECTURE.md) — Design principles, workflow examples
 - [scripts/README.md](scripts/README.md) — Helper scripts reference
 - [tests/README.md](tests/README.md) — Test suite documentation
