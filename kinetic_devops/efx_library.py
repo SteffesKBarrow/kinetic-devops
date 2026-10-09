@@ -138,6 +138,13 @@ def _build_new_signature_rows(
     return new_rows
 
 
+def _has_metadata_changes(row: Dict[str, Any], metadata: Dict[str, Any]) -> bool:
+    """True if any key in metadata would actually change row's current
+    value -- an empty metadata dict, or one that only repeats existing
+    values, is not a change. Pure/no I/O so it's unit testable."""
+    return bool(metadata) and any(row.get(k) != v for k, v in metadata.items())
+
+
 def _build_new_ref_table_rows(
     library_id: str,
     existing_rows: List[Dict[str, Any]],
@@ -376,6 +383,7 @@ class KineticEfxLibraryService(KineticBaseClient):
         company: str = "",
         new_parameters: Optional[List[Dict[str, Any]]] = None,
         new_ref_tables: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Re-inject edited .cs file(s) from
         out_dir/<LibraryID>/<FunctionID>/ back into a freshly-fetched copy
@@ -419,6 +427,11 @@ class KineticEfxLibraryService(KineticBaseClient):
         added here. New rows are {"LibraryID", "TableID", "Updatable": False,
         "RowMod": "A"} -- Updatable is always False since this only adds
         read access; making a table writable wasn't needed or tested.
+
+        metadata optionally overrides other EfxFunction row fields (e.g.
+        {"Description": "..."}) in the same call -- merged onto the
+        freshly-fetched row before submission, so it can't clobber a
+        concurrent change to a field this didn't touch.
 
         Verified live: ApplyChangesWithDiagnostics returns
         {"parameters": {"libraryTableset": ..., "diagnostics": [...]}} --
@@ -475,13 +488,18 @@ class KineticEfxLibraryService(KineticBaseClient):
         existing_ref_tables = [r for r in (tableset.get("EfxRefTable") or []) if r.get("LibraryID") == library_id]
         new_ref_table_rows = _build_new_ref_table_rows(library_id, existing_ref_tables, new_ref_tables or [])
 
-        if not changed and not new_sig_rows and not new_ref_table_rows:
+        metadata_changed = _has_metadata_changes(row, metadata or {})
+
+        if not changed and not new_sig_rows and not new_ref_table_rows and not metadata_changed:
             return {"library_id": library_id, "function_id": function_id, "changed": False}
 
         function_rows = []
-        if changed:
+        if changed or metadata_changed:
             updated_row = dict(row)
-            updated_row["Body"] = new_body
+            if changed:
+                updated_row["Body"] = new_body
+            if metadata_changed:
+                updated_row.update(metadata)
             updated_row["RowMod"] = "U"
             function_rows.append(updated_row)
 
@@ -511,6 +529,7 @@ class KineticEfxLibraryService(KineticBaseClient):
             "function_id": function_id,
             "changed": True,
             "body_changed": changed,
+            "metadata_changed": metadata_changed,
             "parameters_added": new_sig_rows,
             "ref_tables_added": new_ref_table_rows,
             "diagnostics": diagnostics,

@@ -20,6 +20,7 @@ from kinetic_devops.efx_library import (
     _build_new_ref_table_rows,
     _build_new_signature_rows,
     _diagnostic_is_blocking,
+    _has_metadata_changes,
     _dotnet_xml_attribute_escape,
     _iter_custom_code_actions,
     _replace_code_attribute_for_step,
@@ -183,6 +184,21 @@ class TestBuildNewRefTableRows(unittest.TestCase):
 
     def test_empty_table_ids_returns_empty_list(self):
         self.assertEqual(_build_new_ref_table_rows("L", [], []), [])
+
+
+class TestHasMetadataChanges(unittest.TestCase):
+    def test_true_when_value_differs(self):
+        self.assertTrue(_has_metadata_changes({"Description": "old"}, {"Description": "new"}))
+
+    def test_false_when_value_matches(self):
+        self.assertFalse(_has_metadata_changes({"Description": "same"}, {"Description": "same"}))
+
+    def test_false_when_metadata_empty(self):
+        self.assertFalse(_has_metadata_changes({"Description": "same"}, {}))
+
+    def test_true_when_any_one_of_several_keys_differs(self):
+        row = {"Description": "same", "Private": False}
+        self.assertTrue(_has_metadata_changes(row, {"Description": "same", "Private": True}))
 
 
 class TestDiagnosticIsBlocking(unittest.TestCase):
