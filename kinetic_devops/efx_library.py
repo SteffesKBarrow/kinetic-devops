@@ -138,6 +138,22 @@ def _build_new_signature_rows(
     return new_rows
 
 
+def _build_new_ref_table_rows(
+    library_id: str,
+    existing_rows: List[Dict[str, Any]],
+    table_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """Build new EfxRefTable rows for push_function_source, skipping any
+    TableID already referenced. Pure/no I/O so it's unit testable without
+    live credentials."""
+    existing_ids = {r.get("TableID") for r in existing_rows}
+    return [
+        {"LibraryID": library_id, "TableID": table_id, "Updatable": False, "RowMod": "A"}
+        for table_id in table_ids
+        if table_id not in existing_ids
+    ]
+
+
 def _replace_code_attribute_for_step(body: str, step_id: str, new_code: str) -> str:
     """Replace the Code="..." attribute inside the DirectiveStep whose Id
     matches step_id, via targeted string surgery on the raw Body text --
@@ -359,6 +375,7 @@ class KineticEfxLibraryService(KineticBaseClient):
         out_dir: str,
         company: str = "",
         new_parameters: Optional[List[Dict[str, Any]]] = None,
+        new_ref_tables: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Re-inject edited .cs file(s) from
         out_dir/<LibraryID>/<FunctionID>/ back into a freshly-fetched copy
@@ -392,6 +409,16 @@ class KineticEfxLibraryService(KineticBaseClient):
         in its live, shipped `recreate` command, which is good corroborating
         evidence, but this method's own first live run is still the real
         verification for EfxFunctionSignature specifically).
+
+        new_ref_tables optionally registers new ERP table references (e.g.
+        "ERP.Vendor") the function's code now depends on. Without this, a
+        table not already referenced compiles with CS1061 ("ILibraryContext'
+        does not contain a definition for 'X'") -- confirmed live: TSG-Steffes
+        only had ERP.Company/ExtCompany/Part/PartCost/VendPart referenced,
+        and adding Db.Vendor usage failed to compile until ERP.Vendor was
+        added here. New rows are {"LibraryID", "TableID", "Updatable": False,
+        "RowMod": "A"} -- Updatable is always False since this only adds
+        read access; making a table writable wasn't needed or tested.
 
         Verified live: ApplyChangesWithDiagnostics returns
         {"parameters": {"libraryTableset": ..., "diagnostics": [...]}} --
@@ -445,7 +472,10 @@ class KineticEfxLibraryService(KineticBaseClient):
         ]
         new_sig_rows = _build_new_signature_rows(library_id, function_id, existing_sigs, new_parameters or [])
 
-        if not changed and not new_sig_rows:
+        existing_ref_tables = [r for r in (tableset.get("EfxRefTable") or []) if r.get("LibraryID") == library_id]
+        new_ref_table_rows = _build_new_ref_table_rows(library_id, existing_ref_tables, new_ref_tables or [])
+
+        if not changed and not new_sig_rows and not new_ref_table_rows:
             return {"library_id": library_id, "function_id": function_id, "changed": False}
 
         function_rows = []
@@ -463,7 +493,7 @@ class KineticEfxLibraryService(KineticBaseClient):
             "EfxRefAssembly": [],
             "EfxRefLibrary": [],
             "EfxRefService": [],
-            "EfxRefTable": [],
+            "EfxRefTable": new_ref_table_rows,
         }
         response = self._call(
             "ApplyChangesWithDiagnostics",
@@ -482,6 +512,7 @@ class KineticEfxLibraryService(KineticBaseClient):
             "changed": True,
             "body_changed": changed,
             "parameters_added": new_sig_rows,
+            "ref_tables_added": new_ref_table_rows,
             "diagnostics": diagnostics,
         }
 
@@ -682,6 +713,13 @@ def main() -> None:
             "Example: --add-param dryRun:System.Boolean --add-param updatedCount:System.Int32:response"
         ),
     )
+    push_source_p.add_argument(
+        "--add-ref-table",
+        action="append",
+        default=[],
+        metavar="ERP.TableName",
+        help="Register a new ERP table reference the code now depends on, may be repeated (e.g. --add-ref-table ERP.Vendor)",
+    )
 
     test_pilot_p = subparsers.add_parser(
         "test-pilot", help="Actually execute a saved function on Pilot (interactive confirmation required, Pilot only)"
@@ -755,7 +793,8 @@ def main() -> None:
                     }
                 )
             result = service.push_function_source(
-                args.library_id, args.function_id, args.out_dir, new_parameters=new_parameters
+                args.library_id, args.function_id, args.out_dir,
+                new_parameters=new_parameters, new_ref_tables=args.add_ref_table,
             )
             if not result.get("changed"):
                 print("= No changes detected; nothing pushed.")
@@ -763,7 +802,8 @@ def main() -> None:
                 print(
                     f"✅ Pushed changes to {args.function_id} "
                     f"(body_changed={result.get('body_changed')}, "
-                    f"parameters_added={len(result.get('parameters_added') or [])}); "
+                    f"parameters_added={len(result.get('parameters_added') or [])}, "
+                    f"ref_tables_added={len(result.get('ref_tables_added') or [])}); "
                     f"diagnostics: {result.get('diagnostics')}"
                 )
         elif args.command == "test-pilot":

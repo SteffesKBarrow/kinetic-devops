@@ -17,6 +17,7 @@ synthetic Body XML so a regression doesn't need live credentials to catch):
 import unittest
 
 from kinetic_devops.efx_library import (
+    _build_new_ref_table_rows,
     _build_new_signature_rows,
     _diagnostic_is_blocking,
     _dotnet_xml_attribute_escape,
@@ -167,6 +168,21 @@ class TestBuildNewSignatureRows(unittest.TestCase):
 
     def test_empty_parameters_returns_empty_list(self):
         self.assertEqual(_build_new_signature_rows("L", "F", [], []), [])
+
+
+class TestBuildNewRefTableRows(unittest.TestCase):
+    def test_adds_new_table_not_already_referenced(self):
+        existing = [{"LibraryID": "L", "TableID": "ERP.Part", "Updatable": False}]
+        rows = _build_new_ref_table_rows("L", existing, ["ERP.Vendor"])
+        self.assertEqual(rows, [{"LibraryID": "L", "TableID": "ERP.Vendor", "Updatable": False, "RowMod": "A"}])
+
+    def test_skips_table_already_referenced(self):
+        existing = [{"LibraryID": "L", "TableID": "ERP.Vendor", "Updatable": False}]
+        rows = _build_new_ref_table_rows("L", existing, ["ERP.Vendor"])
+        self.assertEqual(rows, [])
+
+    def test_empty_table_ids_returns_empty_list(self):
+        self.assertEqual(_build_new_ref_table_rows("L", [], []), [])
 
 
 class TestDiagnosticIsBlocking(unittest.TestCase):
