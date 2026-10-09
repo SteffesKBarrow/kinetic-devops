@@ -17,6 +17,8 @@ synthetic Body XML so a regression doesn't need live credentials to catch):
 import unittest
 
 from kinetic_devops.efx_library import (
+    _build_new_signature_rows,
+    _diagnostic_is_blocking,
     _dotnet_xml_attribute_escape,
     _iter_custom_code_actions,
     _replace_code_attribute_for_step,
@@ -115,6 +117,71 @@ class TestReplaceCodeAttributeForStep(unittest.TestCase):
         root = ET.fromstring(new_body)
         _, action = next(_iter_custom_code_actions(root))
         self.assertEqual(action.get("Code"), "line1();\nline2();")
+
+
+class TestBuildNewSignatureRows(unittest.TestCase):
+    def test_numbers_input_and_output_groups_independently(self):
+        existing = [
+            {"LibraryID": "L", "FunctionID": "F", "Response": False, "ParameterID": 1, "Order": 1},
+            {"LibraryID": "L", "FunctionID": "F", "Response": False, "ParameterID": 2, "Order": 2},
+            {"LibraryID": "L", "FunctionID": "F", "Response": True, "ParameterID": 1, "Order": 1},
+        ]
+        params = [
+            {"argument_name": "dryRun", "data_type": "System.Boolean"},
+            {"argument_name": "updatedCount", "data_type": "System.Int32", "response": True},
+        ]
+        rows = _build_new_signature_rows("L", "F", existing, params)
+
+        self.assertEqual(len(rows), 2)
+        dry_run_row, updated_count_row = rows
+        self.assertEqual(dry_run_row["ArgumentName"], "dryRun")
+        self.assertFalse(dry_run_row["Response"])
+        self.assertEqual(dry_run_row["ParameterID"], 3)  # continues after existing inputs 1,2
+        self.assertEqual(dry_run_row["Order"], 3)
+        self.assertEqual(dry_run_row["RowMod"], "A")
+
+        self.assertEqual(updated_count_row["ArgumentName"], "updatedCount")
+        self.assertTrue(updated_count_row["Response"])
+        self.assertEqual(updated_count_row["ParameterID"], 2)  # continues after existing output 1
+        self.assertEqual(updated_count_row["Order"], 2)
+
+    def test_multiple_new_params_in_same_call_number_sequentially(self):
+        params = [
+            {"argument_name": "a", "data_type": "System.String"},
+            {"argument_name": "b", "data_type": "System.String"},
+            {"argument_name": "c", "data_type": "System.String", "response": True},
+        ]
+        rows = _build_new_signature_rows("L", "F", [], params)
+        self.assertEqual([r["ParameterID"] for r in rows], [1, 2, 1])
+        self.assertEqual([r["Order"] for r in rows], [1, 2, 1])
+
+    def test_defaults_are_sane(self):
+        rows = _build_new_signature_rows("L", "F", [], [{"argument_name": "x", "data_type": "System.String"}])
+        row = rows[0]
+        self.assertEqual(row["LibraryID"], "L")
+        self.assertEqual(row["FunctionID"], "F")
+        self.assertFalse(row["Optional"])
+        self.assertIsNone(row["DefaultValue"])
+        self.assertEqual(row["Description"], "")
+        self.assertIsNone(row["DataTypeInfo"])
+
+    def test_empty_parameters_returns_empty_list(self):
+        self.assertEqual(_build_new_signature_rows("L", "F", [], []), [])
+
+
+class TestDiagnosticIsBlocking(unittest.TestCase):
+    def test_warning_is_not_blocking(self):
+        # Real diagnostic observed live: a push containing ex.GetType().Name
+        # succeeded with this warning, confirming warnings don't roll back.
+        msg = "TSG-SPL-AvgUnitCost.cs(156,91): warning ECF1002: The 'System.Reflection.MemberInfo.Name' property cannot be read."
+        self.assertFalse(_diagnostic_is_blocking(msg))
+
+    def test_error_is_blocking(self):
+        msg = "TSG-SPL-AvgUnitCost.cs(10,5): error CS1002: ; expected"
+        self.assertTrue(_diagnostic_is_blocking(msg))
+
+    def test_unrecognized_format_fails_closed(self):
+        self.assertTrue(_diagnostic_is_blocking("something unexpected happened"))
 
 
 if __name__ == "__main__":

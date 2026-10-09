@@ -88,6 +88,56 @@ def _dotnet_xml_attribute_escape(text: str) -> str:
     return text
 
 
+def _diagnostic_is_blocking(diagnostic: str) -> bool:
+    """Classify one ApplyChangesWithDiagnostics diagnostic string. These
+    come back as plain compiler-output text (e.g. "file.cs(12,3): warning
+    ECF1002: ..."), not structured objects with a severity field, so
+    classification is substring-based on the standard C# compiler format.
+    Verified live: a warning-level diagnostic did not block the save (the
+    server applied it anyway); unrecognized formats are treated as
+    blocking (fail closed) since that hasn't been observed/verified."""
+    lowered = str(diagnostic).lower()
+    if ": warning " in lowered:
+        return False
+    return True
+
+
+def _build_new_signature_rows(
+    library_id: str,
+    function_id: str,
+    existing_rows: List[Dict[str, Any]],
+    parameters: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build new EfxFunctionSignature rows for push_function_source,
+    auto-numbering ParameterID/Order per (FunctionID, Response) group,
+    continuing from the highest existing value. Pure/no I/O so it's unit
+    testable without live credentials."""
+    new_rows: List[Dict[str, Any]] = []
+    for param in parameters:
+        response = bool(param.get("response", False))
+        same_group = [r for r in existing_rows if bool(r.get("Response")) == response]
+        same_group += [r for r in new_rows if bool(r.get("Response")) == response]
+        next_id = max([int(r.get("ParameterID") or 0) for r in same_group], default=0) + 1
+        next_order = max([int(r.get("Order") or 0) for r in same_group], default=0) + 1
+        new_rows.append(
+            {
+                "LibraryID": library_id,
+                "FunctionID": function_id,
+                "Response": response,
+                "ParameterID": next_id,
+                "ArgumentName": param["argument_name"],
+                "Order": next_order,
+                "DataType": param["data_type"],
+                "DataTypeInfo": param.get("data_type_info"),
+                "Optional": bool(param.get("optional", False)),
+                "DefaultValue": param.get("default_value"),
+                "Description": param.get("description", ""),
+                "RowMod": "A",
+            }
+        )
+    return new_rows
+
+
 def _replace_code_attribute_for_step(body: str, step_id: str, new_code: str) -> str:
     """Replace the Code="..." attribute inside the DirectiveStep whose Id
     matches step_id, via targeted string surgery on the raw Body text --
@@ -303,7 +353,12 @@ class KineticEfxLibraryService(KineticBaseClient):
         return results
 
     def push_function_source(
-        self, library_id: str, function_id: str, out_dir: str, company: str = ""
+        self,
+        library_id: str,
+        function_id: str,
+        out_dir: str,
+        company: str = "",
+        new_parameters: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Re-inject edited .cs file(s) from
         out_dir/<LibraryID>/<FunctionID>/ back into a freshly-fetched copy
@@ -311,7 +366,32 @@ class KineticEfxLibraryService(KineticBaseClient):
         sidecar, so concurrent server-side changes to nodes this didn't
         touch aren't clobbered), then submit via ApplyChangesWithDiagnostics
         (ApplyChanges is deprecated in the live swagger spec; this uses the
-        non-deprecated method). Raises if the server reports diagnostics.
+        non-deprecated method). Raises if the server reports a blocking
+        (error-level) diagnostic; warning-level diagnostics are returned
+        in the result but don't block the save -- verified live: a push
+        containing `ex.GetType().Name` succeeded and actually saved with
+        diagnostics=["...warning ECF1002: The 'System.Reflection.MemberInfo.Name'
+        property cannot be read."], confirming warnings don't roll back
+        the change server-side.
+
+        new_parameters optionally adds new input/output parameters in the
+        same call. Each item is a dict: {"argument_name": str, "data_type":
+        str (a .NET type name like "System.String"/"System.Int32"/
+        "System.Boolean?"), "response": bool (False=input, True=output,
+        default False), "optional": bool (default False), "default_value":
+        Any (default None), "description": str (default "")}. ParameterID
+        and Order are computed automatically, continuing from the highest
+        existing value within the same (FunctionID, Response) group --
+        verified live: Self-Service-Email/EmailNotifications has 7 input
+        rows (Response=false, ParameterID 1-7) and 1 output row
+        (Response=true, ParameterID restarts at 1), confirming ParameterID
+        is scoped per Response group, not global. New rows use RowMod="A"
+        (the standard Epicor Added/Updated/Deleted dataset convention --
+        "U" and "D" are directly verified live elsewhere in this module;
+        "A" is what kinetic_devops/solutions.py already uses for new rows
+        in its live, shipped `recreate` command, which is good corroborating
+        evidence, but this method's own first live run is still the real
+        verification for EfxFunctionSignature specifically).
 
         Verified live: ApplyChangesWithDiagnostics returns
         {"parameters": {"libraryTableset": ..., "diagnostics": [...]}} --
@@ -358,17 +438,27 @@ class KineticEfxLibraryService(KineticBaseClient):
                 new_body = _replace_code_attribute_for_step(new_body, node_id, new_code)
                 changed = True
 
-        if not changed:
+        existing_sigs = [
+            s
+            for s in (tableset.get("EfxFunctionSignature") or [])
+            if s.get("LibraryID") == library_id and s.get("FunctionID") == function_id
+        ]
+        new_sig_rows = _build_new_signature_rows(library_id, function_id, existing_sigs, new_parameters or [])
+
+        if not changed and not new_sig_rows:
             return {"library_id": library_id, "function_id": function_id, "changed": False}
 
-        updated_row = dict(row)
-        updated_row["Body"] = new_body
-        updated_row["RowMod"] = "U"
+        function_rows = []
+        if changed:
+            updated_row = dict(row)
+            updated_row["Body"] = new_body
+            updated_row["RowMod"] = "U"
+            function_rows.append(updated_row)
 
         tableset_payload = {
             "EfxLibrary": [],
-            "EfxFunction": [updated_row],
-            "EfxFunctionSignature": [],
+            "EfxFunction": function_rows,
+            "EfxFunctionSignature": new_sig_rows,
             "EfxLibraryMapping": [],
             "EfxRefAssembly": [],
             "EfxRefLibrary": [],
@@ -382,13 +472,16 @@ class KineticEfxLibraryService(KineticBaseClient):
         )
         result = response.get("parameters") or {}
         diagnostics = result.get("diagnostics") or []
-        if diagnostics:
-            raise RuntimeError(f"ApplyChangesWithDiagnostics reported diagnostics: {diagnostics}")
+        blocking = [d for d in diagnostics if _diagnostic_is_blocking(d)]
+        if blocking:
+            raise RuntimeError(f"ApplyChangesWithDiagnostics reported blocking diagnostics: {blocking}")
 
         return {
             "library_id": library_id,
             "function_id": function_id,
             "changed": True,
+            "body_changed": changed,
+            "parameters_added": new_sig_rows,
             "diagnostics": diagnostics,
         }
 
@@ -404,17 +497,15 @@ class KineticEfxLibraryService(KineticBaseClient):
             (never unattended/scripted/CI).
           - Requires typing the function id back as a confirmation prompt.
 
-        Verified live (captured trace): immediately after a successful
-        ApplyChangesWithDiagnostics save, the EFx Studio UI issued
-        POST {instance}/api/v2/efx/staging/{company}/{libraryId} and the
-        response's callertrace header decoded to an op record showing the
-        function was actually invoked. NOT verified: the exact URL shape
-        for naming which function and for passing parameters -- the
-        captured function took no arguments (empty request body), so this
-        guesses {instance}/api/v2/efx/staging/{company}/{libraryId}/{functionId}
-        with params as the JSON body. Treat the first real use of this
-        against a parameterized function as the verification step, not as
-        already-confirmed behavior.
+        Verified live: POST {instance}/api/v2/efx/staging/{company}/{libraryId}/{functionId}
+        with params as the JSON body actually executes the function with
+        those parameter values and returns its output parameters. First
+        seen in a captured trace of a zero-argument function (empty
+        request body); now confirmed end-to-end against a real
+        parameterized function (TSG-SPL-AvgUnitCost with dryRun/logDetail
+        inputs) -- the dry-run branch was honored (no live data was
+        written) and updatedCount/unchangedCount/skippedCount/errorCount/
+        summary/runLog all came back correctly in the response.
         """
         nickname = str(self.config.get("nickname") or "")
         if nickname.lower() != "pilot":
@@ -579,13 +670,33 @@ def main() -> None:
     push_source_p.add_argument("library_id")
     push_source_p.add_argument("function_id")
     push_source_p.add_argument("--out-dir", required=True)
+    push_source_p.add_argument(
+        "--add-param",
+        action="append",
+        default=[],
+        metavar="name:dataType[:response][:optional]",
+        help=(
+            "Add a new input/output parameter, may be repeated. dataType is a .NET type "
+            "name (System.String, System.Int32, System.Boolean?, ...). Add the literal "
+            "word 'response' to mark it an output parameter, 'optional' to mark it optional. "
+            "Example: --add-param dryRun:System.Boolean --add-param updatedCount:System.Int32:response"
+        ),
+    )
 
     test_pilot_p = subparsers.add_parser(
         "test-pilot", help="Actually execute a saved function on Pilot (interactive confirmation required, Pilot only)"
     )
     test_pilot_p.add_argument("library_id")
     test_pilot_p.add_argument("function_id")
-    test_pilot_p.add_argument("--params", help="JSON object of parameters to pass", default=None)
+    test_pilot_p.add_argument(
+        "--params", help="JSON object of parameters to pass (avoid on PowerShell -- shell quoting of "
+        "embedded double-quotes to a native exe is unreliable there; use --params-file instead)",
+        default=None,
+    )
+    test_pilot_p.add_argument(
+        "--params-file", help="Path to a JSON file containing the parameters object (sidesteps shell quoting entirely)",
+        default=None,
+    )
 
     args = parser.parse_args()
     if not args.command:
@@ -629,13 +740,43 @@ def main() -> None:
             if failed:
                 sys.exit(1)
         elif args.command == "push-source":
-            result = service.push_function_source(args.library_id, args.function_id, args.out_dir)
+            new_parameters = []
+            for spec in args.add_param:
+                parts = spec.split(":")
+                if len(parts) < 2:
+                    raise ValueError(f"Invalid --add-param '{spec}': expected name:dataType[:response][:optional]")
+                name, data_type, flags = parts[0], parts[1], {p.lower() for p in parts[2:]}
+                new_parameters.append(
+                    {
+                        "argument_name": name,
+                        "data_type": data_type,
+                        "response": "response" in flags,
+                        "optional": "optional" in flags,
+                    }
+                )
+            result = service.push_function_source(
+                args.library_id, args.function_id, args.out_dir, new_parameters=new_parameters
+            )
             if not result.get("changed"):
                 print("= No changes detected; nothing pushed.")
             else:
-                print(f"✅ Pushed changes to {args.function_id}; diagnostics: {result.get('diagnostics')}")
+                print(
+                    f"✅ Pushed changes to {args.function_id} "
+                    f"(body_changed={result.get('body_changed')}, "
+                    f"parameters_added={len(result.get('parameters_added') or [])}); "
+                    f"diagnostics: {result.get('diagnostics')}"
+                )
         elif args.command == "test-pilot":
-            params = json.loads(args.params) if args.params else {}
+            if args.params and args.params_file:
+                raise ValueError("Use either --params or --params-file, not both.")
+            if args.params_file:
+                # utf-8-sig tolerates a UTF-8 BOM, which PowerShell's
+                # Out-File/Set-Content -Encoding utf8 writes by default --
+                # verified live that a BOM-written file breaks plain "utf-8".
+                with open(args.params_file, "r", encoding="utf-8-sig") as f:
+                    params = json.load(f)
+            else:
+                params = json.loads(args.params) if args.params else {}
             result = service.test_function_in_pilot(args.library_id, args.function_id, params=params)
             print(f"✅ Executed. Response: {result}")
     except Exception as e:
