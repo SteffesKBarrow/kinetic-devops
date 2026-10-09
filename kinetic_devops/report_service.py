@@ -19,10 +19,166 @@ if __package__:
 else:
     from kinetic_devops.base_client import KineticBaseClient
 
+def _find_base64_field(obj: Any, path: str = "") -> Optional[Dict[str, Any]]:
+    """Depth-first search for a long string value (report PDF bytes) inside
+    an arbitrarily-nested response. GetReportBytes's exact response shape
+    isn't fixed/documented -- ported from a verified TypeScript reference
+    (tap_prod/base44/functions/epicorMes/handlers/reports.ts) that uses the
+    same defensive search for the same reason."""
+    if isinstance(obj, str) and len(obj) > 100:
+        return {"path": path, "value": obj}
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            result = _find_base64_field(value, f"{path}.{key}" if path else key)
+            if result:
+                return result
+    return None
+
+
 class KineticReportService(KineticBaseClient):
     """
     Service for managing Epicor Kinetic Reports.
     """
+
+    def _rpt_call(self, service_name: str, method_name: str, payload: Dict[str, Any], company: str = "") -> Dict[str, Any]:
+        target_co = company or self.config["company"]
+        url = f"{self.config['url'].rstrip('/')}/api/v2/odata/{target_co}/{service_name}/{method_name}"
+        return self.execute_request("POST", url, payload=payload, company=target_co)
+
+    def submit_report_job(
+        self,
+        service_name: str,
+        change_method: str,
+        param_table: str,
+        base_param: Dict[str, Any],
+        agent_id: str = "SystemTaskAgent",
+        maint_program: str = "",
+        company: str = "",
+    ) -> Dict[str, Any]:
+        """Submit a report render job via Epicor's standard report-submission
+        pattern: Change<Key> (a two-row dataset -- an unchanged baseline row
+        plus a RowMod="U" row carrying the real parameters) followed by
+        SubmitToAgent. Verified live-reference pattern (not guessed): ported
+        from tap_prod/base44/functions/epicorMes/handlers/reports.ts's
+        printJobTraveler, a "PDCA-validated"/"production-validated" call
+        against Erp.Rpt.JobTravSvc. Each report's own BO (service_name),
+        Change method, param table name, and the full base_param schema are
+        report-specific -- this function is generic over all of those, but
+        the caller must supply values verified for the target report (e.g.
+        via pull_api_store.py against the report's own Erp.Rpt.*Svc), not
+        assume JobTravParam's field list applies elsewhere.
+        """
+        change_payload = {
+            "ds": {
+                "ReportStyle": [],
+                param_table: [
+                    {**base_param, "RowMod": ""},
+                    {**base_param, "RowMod": "U"},
+                ],
+            }
+        }
+        change_resp = self._rpt_call(service_name, change_method, change_payload, company=company)
+        result_ds = change_resp.get("parameters", {}).get("ds") or change_resp.get("parameters") or change_resp
+
+        # The reference implementation filters to rows where the report's own
+        # key field is truthy (e.g. `p => p.Jobs` for JobTrav) to drop the
+        # blank baseline row before SubmitToAgent. This function is generic
+        # over the key field name, so it can't replicate that filter exactly
+        # -- verified live that submitting both rows unchanged (baseline +
+        # the real one) works fine regardless, so no filtering is applied.
+        param_rows = result_ds.get(param_table) or []
+        submit_payload = {
+            "ds": {**result_ds, param_table: param_rows},
+            "agentID": agent_id,
+            "agentSchedNum": 0,
+            "agentTaskNum": 0,
+            "recurringTask": False,
+            "maintProgram": maint_program,
+        }
+        return self._rpt_call(service_name, "SubmitToAgent", submit_payload, company=company)
+
+    def get_monitor_tasks(self, workstation_id: str, task_description: Optional[str] = None, company: str = "") -> Dict[str, Any]:
+        """Poll Ice.BO.SysMonitorSvc for task/report status. Started from
+        tap_prod's monitorJobTraveler action, but verified live that its
+        historyOnly=False/retrieveAllTasks=False combination is fragile: a
+        completed task's SysRptLst row (needed to get the SysRowID for
+        download) disappears from that "live" view almost immediately after
+        completion -- confirmed by polling again seconds later and getting
+        an empty SysRptLst for a task SysTask still correctly reports as
+        COMPLETE. historyOnly=True + retrieveAllTasks=True reliably returns
+        it. Also verified: workstationId in the request does NOT reliably
+        scope results server-side -- tasks submitted under other workstation
+        IDs showed up too -- so correlate a specific download by SysTaskNum
+        (see download logic in callers), not by assuming the result set is
+        already scoped to this workstation."""
+        from datetime import datetime, timezone
+
+        started_on = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+        payload = {
+            "querySysRptLst": True,
+            "workstationId": workstation_id,
+            "querySysTask": True,
+            "querySysTaskLog": True,
+            "historyOnly": True,
+            "startedOn": started_on,
+            "retrieveAllTasks": True,
+        }
+        response = self._rpt_call("Ice.BO.SysMonitorSvc", "GetMonitorDataKeepIdleTime", payload, company=company)
+        return_obj = response.get("returnObj") or response.get("parameters", {}).get("returnObj") or {}
+        all_sys_task = return_obj.get("SysTask") or []
+        task_by_num = {t.get("SysTaskNum"): t for t in all_sys_task}
+
+        # SysTask rows carry no WorkStationID at all (verified live) -- only
+        # SysRptLst does. Scope by workstation there first, then use each
+        # row's SysTaskNum to pull its matching SysTask entry -- this is the
+        # only reliable way to scope a result to "my" submission. Filtering
+        # SysTask directly by task_description alone (with no workstation
+        # scoping at all, since it's not possible) would cross-contaminate
+        # between concurrent/sequential runs sharing the same description.
+        sys_rpt_lst = [r for r in (return_obj.get("SysRptLst") or []) if r.get("WorkStationID") == workstation_id]
+        if task_description:
+            sys_rpt_lst = [r for r in sys_rpt_lst if r.get("RptDescription") == task_description]
+        scoped_tasks = [task_by_num[r["SysTaskNum"]] for r in sys_rpt_lst if r.get("SysTaskNum") in task_by_num]
+
+        return {
+            "tasks": scoped_tasks,
+            "sys_rpt_lst": sys_rpt_lst,
+            "completed": [t for t in scoped_tasks if t.get("TaskStatus") == "COMPLETE"],
+            "pending": [t for t in scoped_tasks if t.get("TaskStatus") not in ("COMPLETE", "ERROR")],
+            "errored": [t for t in scoped_tasks if t.get("TaskStatus") == "ERROR"],
+        }
+
+    def wait_for_report_completion(
+        self, workstation_id: str, task_description: str, timeout: float = 60.0, poll_interval: float = 3.0, company: str = ""
+    ) -> Dict[str, Any]:
+        """Block until a submitted report task completes, errors, or the
+        timeout elapses -- the polling loop needed to use submit_report_job
+        synchronously (e.g. in a CI/CD smoke test)."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        while True:
+            status = self.get_monitor_tasks(workstation_id, task_description=task_description, company=company)
+            if status["completed"] or status["errored"]:
+                return status
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Report task '{task_description}' for workstation '{workstation_id}' "
+                    f"did not complete within {timeout}s (pending: {len(status['pending'])})"
+                )
+            time.sleep(poll_interval)
+
+    def download_report_pdf(self, sys_row_id: str, company: str = "") -> bytes:
+        """Download a completed report's PDF bytes via
+        Ice.BO.ReportMonitorSvc/GetReportBytes. The base64 field's exact
+        nesting in the response isn't fixed (ported defensive search, see
+        _find_base64_field), consistent with the verified TypeScript
+        reference this was ported from."""
+        response = self._rpt_call("Ice.BO.ReportMonitorSvc", "GetReportBytes", {"sysRowId": sys_row_id}, company=company)
+        field = _find_base64_field(response)
+        if not field:
+            raise ValueError(f"Could not locate base64 PDF bytes in GetReportBytes response for sysRowId={sys_row_id}")
+        return base64.b64decode(field["value"])
 
     def upload_file_to_server(self, local_path: str, server_path: str, folder: int = 4) -> bool:
         """
@@ -88,22 +244,79 @@ class KineticReportService(KineticBaseClient):
         print("✅ Reports extracted and uploaded successfully.")
         return True
 
+def _build_job_trav_param(job_num: str, style_num: int, workstation_id: str) -> Dict[str, Any]:
+    """The full JobTravParam row schema, verified live against Pilot (see
+    submit_report_job's docstring for provenance) -- field list and
+    defaults are specific to Erp.Rpt.JobTravSvc, not a generic report
+    param shape."""
+    return {
+        "PrntAllMassPrnt": False, "Jobs": job_num, "Assembly": "", "SubAssem": False, "NewPgPerAsm": False,
+        "OprDates": False, "OprStd": False, "BarCodes": True, "ShpSchd": False,
+        "PrintSchedResources": False, "PrintSchedResrcDesc": False, "OpInstructions": False,
+        "PrintAttributes": False, "DisableShpSchd": False,
+        "SysRowID": "00000000-0000-0000-0000-000000000000",
+        "AutoAction": "SSRSPREVIEW", "PrinterName": "", "AgentSchedNum": 0, "AgentID": "", "AgentTaskNum": 0,
+        "RecurringTask": False, "RptPageSettings": "", "RptPrinterSettings": "", "RptVersion": "",
+        "ReportStyleNum": style_num, "WorkstationID": workstation_id, "TaskNote": "", "ArchiveCode": 0,
+        "DateFormat": "m/d/yyyy", "NumericFormat": ",.", "AgentCompareString": "",
+        "ProcessID": "", "ProcessCompany": "", "ProcessSystemCode": "", "ProcessTaskNum": 0,
+        "DecimalsGeneral": 0, "DecimalsCost": 0, "DecimalsPrice": 0,
+        "GlbDecimalsGeneral": 0, "GlbDecimalsCost": 0, "GlbDecimalsPrice": 0,
+        "FaxSubject": "", "FaxTo": "", "FaxNumber": "",
+        "EMailTo": "", "EMailCC": "", "EMailBCC": "", "EMailBody": "",
+        "AttachmentType": "", "ReportCurrencyCode": "USD", "ReportCultureCode": "en-US",
+        "SSRSRenderFormat": "PDF", "UIXml": "", "PrintReportParameters": False,
+        "SSRSEnableRouting": False, "DesignMode": False,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Kinetic Report Service CLI")
-    parser.add_argument("action", choices=['upload', 'extract', 'deploy'], help="Action to perform")
-    parser.add_argument("file", help="Local path to the .zip file")
+    parser.add_argument("action", choices=['upload', 'extract', 'deploy', 'print-job-traveler'], help="Action to perform")
+    parser.add_argument("file", nargs="?", help="Local path to the .zip file (upload/extract/deploy)")
     parser.add_argument("--server-path", help="Server destination path (for upload action)", default="_TempZip//Reports.zip")
     parser.add_argument("--report-id", help="Report ID (printProgram) e.g. 'Report Path (printProgram) e.g. reports/CustomReports/PackingSlip/PackSlip,reports/CustomReports/ShippingLabels/ShipLabl'")
+    parser.add_argument("--job-num", help="JobNum to print a traveler for (print-job-traveler)")
+    parser.add_argument("--style-num", type=int, default=1001, help="ReportStyleNum (print-job-traveler, default: 1001)")
+    parser.add_argument("--workstation-id", default="kinetic-devops", help="WorkstationID used to correlate the submitted task (print-job-traveler)")
+    parser.add_argument("--out", help="Output PDF path (print-job-traveler, default: <JobNum>.pdf)")
+    parser.add_argument("--wait-timeout", type=float, default=60.0, help="Seconds to wait for report completion (print-job-traveler, default: 60)")
     parser.add_argument("--env", help="Environment Nickname")
     parser.add_argument("--user", help="Specific User ID")
     parser.add_argument("--debug", action="store_true")
-    
+
     args = parser.parse_args()
 
     try:
         service = KineticReportService(args.env, args.user, debug=args.debug)
 
-        if args.action == 'upload':
+        if args.action == 'print-job-traveler':
+            if not args.job_num:
+                print("❌ Error: --job-num is required for print-job-traveler.")
+                sys.exit(1)
+            base_param = _build_job_trav_param(args.job_num, args.style_num, args.workstation_id)
+            service.submit_report_job(
+                "Erp.Rpt.JobTravSvc", "ChangeJobNum", "JobTravParam", base_param,
+                maint_program="Erp.UI.Rpt.JobTravTransaction",
+            )
+            status = service.wait_for_report_completion(
+                args.workstation_id, "Job Traveler", timeout=args.wait_timeout
+            )
+            if status["errored"]:
+                print(f"❌ Report task errored: {status['errored']}")
+                sys.exit(1)
+            # sys_rpt_lst is already scoped to this workstation+description by
+            # get_monitor_tasks; take the most recently started match.
+            if not status["sys_rpt_lst"]:
+                print("❌ Completed, but no matching SysRptLst row found to download.")
+                sys.exit(1)
+            sys_row_id = sorted(status["sys_rpt_lst"], key=lambda r: r.get("CreatedOn") or "")[-1]["SysRowID"]
+            pdf_bytes = service.download_report_pdf(sys_row_id)
+            out_path = args.out or f"{args.job_num}.pdf"
+            with open(out_path, "wb") as f:
+                f.write(pdf_bytes)
+            print(f"✅ Printed Job Traveler for {args.job_num} -> {out_path} ({len(pdf_bytes)} bytes)")
+        elif args.action == 'upload':
             service.upload_file_to_server(args.file, args.server_path)
         elif args.action == 'extract':
             if not args.report_id:
