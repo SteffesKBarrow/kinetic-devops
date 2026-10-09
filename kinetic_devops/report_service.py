@@ -97,6 +97,68 @@ class KineticReportService(KineticBaseClient):
         }
         return self._rpt_call(service_name, "SubmitToAgent", submit_payload, company=company)
 
+    def submit_packing_slip_job(
+        self,
+        pack_num: int,
+        workstation_id: str,
+        style_num: int = 2,
+        agent_id: str = "SystemTaskAgent",
+        maint_program: str = "Erp.UI.Rpt.PackingSlipPrintTransaction",
+        company: str = "",
+    ) -> Dict[str, Any]:
+        """Submit a Packing Slip print job. Structurally different from
+        submit_report_job's JobTrav-derived Change<Key> pattern --
+        Erp.Rpt.PackingSlipPrintSvc has no Change method at all. Epicor's own
+        Kinetic client does this instead (confirmed by reading
+        exports/System-Apps/Apps/Erp.UIRpt.PackingSlipPrint/events.jsonc, not
+        guessed): GetNewParameters returns a single blank PackingSlipParam row
+        with RowMod="A" (not JobTrav's two-row ""/"U" pair -- there's only
+        ever one row here, so there's no existing row to "update"), then set
+        PackNum on it, then PackNumDefaults(packNum, ds) to populate
+        style-specific defaults, then SubmitToAgent -- RowMod stays "A"
+        throughout, verified live. style_num defaults to 2 ("Standard - SSRS",
+        SystemFlag=true) rather than JobTrav's 1001 convention -- 1001 here is
+        a tenant custom style ("PackSlip_Comments") that was missing its RDL
+        files (StatusCode=1) when this was verified against Pilot, so 2 is the
+        safe default; callers should still pass the style verified for their
+        own tenant. maint_program's value isn't documented anywhere -- it's
+        inferred from the same Kinetic app-ID transform JobTrav's own
+        maint_program follows (Erp.UIRpt.PackingSlipPrint ->
+        Erp.UI.Rpt.PackingSlipPrintTransaction) and confirmed live:
+        SubmitToAgent 400s with "You must pass the name of the maintenance
+        program" when blank, and succeeds with this value (full live
+        end-to-end verification against Pilot: PackNum=1, real PDF
+        downloaded, magic bytes and size confirmed)."""
+        new_params = self._rpt_call("Erp.Rpt.PackingSlipPrintSvc", "GetNewParameters", {}, company=company)
+        ds = new_params.get("returnObj") or {}
+        param_rows = ds.get("PackingSlipParam") or []
+        if not param_rows:
+            raise ValueError("GetNewParameters returned no PackingSlipParam row")
+        param_rows[0]["PackNum"] = pack_num
+        param_rows[0]["ReportStyleNum"] = style_num
+        param_rows[0]["StyleNumExt"] = style_num
+        param_rows[0]["WorkstationID"] = workstation_id
+
+        defaults_resp = self._rpt_call(
+            "Erp.Rpt.PackingSlipPrintSvc", "PackNumDefaults",
+            {"packNum": pack_num, "ds": ds}, company=company,
+        )
+        result_ds = defaults_resp.get("parameters", {}).get("ds") or defaults_resp.get("parameters") or defaults_resp
+        result_rows = result_ds.get("PackingSlipParam") or []
+        if result_rows:
+            result_rows[0]["AutoAction"] = "SSRSPREVIEW"
+            result_rows[0]["SSRSRenderFormat"] = "PDF"
+
+        submit_payload = {
+            "ds": result_ds,
+            "agentID": agent_id,
+            "agentSchedNum": 0,
+            "agentTaskNum": 0,
+            "recurringTask": False,
+            "maintProgram": maint_program,
+        }
+        return self._rpt_call("Erp.Rpt.PackingSlipPrintSvc", "SubmitToAgent", submit_payload, company=company)
+
     def get_monitor_tasks(self, workstation_id: str, task_description: Optional[str] = None, company: str = "") -> Dict[str, Any]:
         """Poll Ice.BO.SysMonitorSvc for task/report status. Started from
         tap_prod's monitorJobTraveler action, but verified live that its
@@ -272,15 +334,16 @@ def _build_job_trav_param(job_num: str, style_num: int, workstation_id: str) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="Kinetic Report Service CLI")
-    parser.add_argument("action", choices=['upload', 'extract', 'deploy', 'print-job-traveler'], help="Action to perform")
+    parser.add_argument("action", choices=['upload', 'extract', 'deploy', 'print-job-traveler', 'print-packing-slip'], help="Action to perform")
     parser.add_argument("file", nargs="?", help="Local path to the .zip file (upload/extract/deploy)")
     parser.add_argument("--server-path", help="Server destination path (for upload action)", default="_TempZip//Reports.zip")
     parser.add_argument("--report-id", help="Report ID (printProgram) e.g. 'Report Path (printProgram) e.g. reports/CustomReports/PackingSlip/PackSlip,reports/CustomReports/ShippingLabels/ShipLabl'")
     parser.add_argument("--job-num", help="JobNum to print a traveler for (print-job-traveler)")
-    parser.add_argument("--style-num", type=int, default=1001, help="ReportStyleNum (print-job-traveler, default: 1001)")
-    parser.add_argument("--workstation-id", default="kinetic-devops", help="WorkstationID used to correlate the submitted task (print-job-traveler)")
-    parser.add_argument("--out", help="Output PDF path (print-job-traveler, default: <JobNum>.pdf)")
-    parser.add_argument("--wait-timeout", type=float, default=60.0, help="Seconds to wait for report completion (print-job-traveler, default: 60)")
+    parser.add_argument("--pack-num", type=int, help="PackNum to print a packing slip for (print-packing-slip)")
+    parser.add_argument("--style-num", type=int, help="ReportStyleNum (print-job-traveler default: 1001, print-packing-slip default: 2)")
+    parser.add_argument("--workstation-id", default="kinetic-devops", help="WorkstationID used to correlate the submitted task")
+    parser.add_argument("--out", help="Output PDF path (default: <key>.pdf)")
+    parser.add_argument("--wait-timeout", type=float, default=60.0, help="Seconds to wait for report completion (default: 60)")
     parser.add_argument("--env", help="Environment Nickname")
     parser.add_argument("--user", help="Specific User ID")
     parser.add_argument("--debug", action="store_true")
@@ -294,7 +357,8 @@ def main():
             if not args.job_num:
                 print("❌ Error: --job-num is required for print-job-traveler.")
                 sys.exit(1)
-            base_param = _build_job_trav_param(args.job_num, args.style_num, args.workstation_id)
+            style_num = args.style_num if args.style_num is not None else 1001
+            base_param = _build_job_trav_param(args.job_num, style_num, args.workstation_id)
             service.submit_report_job(
                 "Erp.Rpt.JobTravSvc", "ChangeJobNum", "JobTravParam", base_param,
                 maint_program="Erp.UI.Rpt.JobTravTransaction",
@@ -316,6 +380,27 @@ def main():
             with open(out_path, "wb") as f:
                 f.write(pdf_bytes)
             print(f"✅ Printed Job Traveler for {args.job_num} -> {out_path} ({len(pdf_bytes)} bytes)")
+        elif args.action == 'print-packing-slip':
+            if not args.pack_num:
+                print("❌ Error: --pack-num is required for print-packing-slip.")
+                sys.exit(1)
+            style_num = args.style_num if args.style_num is not None else 2
+            service.submit_packing_slip_job(args.pack_num, args.workstation_id, style_num=style_num)
+            status = service.wait_for_report_completion(
+                args.workstation_id, "Packing Slip Print", timeout=args.wait_timeout
+            )
+            if status["errored"]:
+                print(f"❌ Report task errored: {status['errored']}")
+                sys.exit(1)
+            if not status["sys_rpt_lst"]:
+                print("❌ Completed, but no matching SysRptLst row found to download.")
+                sys.exit(1)
+            sys_row_id = sorted(status["sys_rpt_lst"], key=lambda r: r.get("CreatedOn") or "")[-1]["SysRowID"]
+            pdf_bytes = service.download_report_pdf(sys_row_id)
+            out_path = args.out or f"PackSlip-{args.pack_num}.pdf"
+            with open(out_path, "wb") as f:
+                f.write(pdf_bytes)
+            print(f"✅ Printed Packing Slip for PackNum {args.pack_num} -> {out_path} ({len(pdf_bytes)} bytes)")
         elif args.action == 'upload':
             service.upload_file_to_server(args.file, args.server_path)
         elif args.action == 'extract':

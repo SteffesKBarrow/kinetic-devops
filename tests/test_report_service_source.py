@@ -1,9 +1,10 @@
 """Regression tests for report_service.py's report-printing helpers.
 
 The submit/monitor/download flow itself (KineticReportService.submit_report_job,
-get_monitor_tasks, wait_for_report_completion, download_report_pdf) is
-live-verified against Pilot (two full end-to-end PDF downloads of a real Job
-Traveler report), not mocked here -- these tests cover the pure logic pieces
+submit_packing_slip_job, get_monitor_tasks, wait_for_report_completion,
+download_report_pdf) is live-verified against Pilot -- full end-to-end PDF
+downloads of a real Job Traveler report and a real Packing Slip (PackNum 1,
+StyleNum 2) -- not mocked here -- these tests cover the pure logic pieces
 that don't need live credentials.
 """
 
