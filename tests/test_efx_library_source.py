@@ -23,6 +23,7 @@ from kinetic_devops.efx_library import (
     _has_metadata_changes,
     _dotnet_xml_attribute_escape,
     _iter_custom_code_actions,
+    _node_file_name,
     _replace_code_attribute_for_step,
 )
 import xml.etree.ElementTree as ET
@@ -184,6 +185,37 @@ class TestBuildNewRefTableRows(unittest.TestCase):
 
     def test_empty_table_ids_returns_empty_list(self):
         self.assertEqual(_build_new_ref_table_rows("L", [], []), [])
+
+
+class TestNodeFileName(unittest.TestCase):
+    """GUID is deliberately excluded from the filename -- see
+    _node_file_name's docstring. Regression guard: a NodeId/GUID can
+    legitimately differ between environments for the same logical node
+    (independently created, or regenerated on import), which would
+    silently break cross-environment push-back if the filename baked in
+    one environment's GUID."""
+
+    def test_uses_display_name_only_no_guid(self):
+        name = _node_file_name("Execute Custom Code 0", 0, {})
+        self.assertEqual(name, "Execute_Custom_Code_0.cs")
+
+    def test_same_display_name_same_file_name_regardless_of_call(self):
+        # Simulates extract (environment A) and push (environment B)
+        # computing the filename independently -- must agree even though
+        # a real NodeId/GUID would differ between the two environments.
+        name_a = _node_file_name("Execute Custom Code 0", 0, {})
+        name_b = _node_file_name("Execute Custom Code 0", 0, {})
+        self.assertEqual(name_a, name_b)
+
+    def test_empty_display_name_falls_back_to_positional(self):
+        self.assertEqual(_node_file_name("", 2, {}), "CustomCode2.cs")
+
+    def test_duplicate_display_names_get_numeric_suffix(self):
+        used = {}
+        first = _node_file_name("Execute Custom Code 0", 0, used)
+        second = _node_file_name("Execute Custom Code 0", 1, used)
+        self.assertEqual(first, "Execute_Custom_Code_0.cs")
+        self.assertEqual(second, "Execute_Custom_Code_0_1.cs")
 
 
 class TestHasMetadataChanges(unittest.TestCase):

@@ -39,6 +39,31 @@ def _safe_path_component(value: str) -> str:
     return cleaned
 
 
+def _node_file_name(display_name: str, index: int, used_names: Dict[str, int]) -> str:
+    """Build a stable .cs filename for a code node from its DisplayName --
+    deliberately NOT from its NodeId/GUID. A DirectiveStep's Id is assigned
+    per-instance; the 'same' logical function created independently in two
+    environments (or recreated via import) can end up with different
+    NodeIds for what's otherwise identical code. Embedding the GUID in the
+    filename would silently break cross-environment push-back: push would
+    rebuild the expected filename from the freshly-fetched (target
+    environment's) live GUID, find no local file with that exact name, and
+    skip the node without even raising -- the edit would just silently not
+    apply. DisplayName is stable across environments for the same logical
+    node (it's user-authored content, not a generated identity), so it's
+    used as the correlation key on both extract and push; the actual live
+    NodeId is always re-read fresh from the current fetch for the API call
+    itself, never trusted from a stored/stale value.
+
+    used_names tracks how many times each base name has been seen so far
+    in this call, appending a numeric suffix for duplicates (e.g. two
+    nodes both named "Execute Custom Code 0" -- rare but not impossible)."""
+    base = _safe_path_component(display_name) if display_name else f"CustomCode{index}"
+    count = used_names.get(base, 0)
+    used_names[base] = count + 1
+    return f"{base}.cs" if count == 0 else f"{base}_{count}.cs"
+
+
 def _resolve_contained_path(out_dir: str, *parts: str) -> str:
     """Join parts under out_dir and verify the result doesn't escape it."""
     out_dir_abs = os.path.abspath(out_dir)
@@ -314,17 +339,20 @@ class KineticEfxLibraryService(KineticBaseClient):
         os.makedirs(func_dir, exist_ok=True)
 
         written_files: List[str] = []
+        node_provenance: List[Dict[str, str]] = []
         if body.lstrip().startswith("<"):
             root = ET.fromstring(body)
+            used_names: Dict[str, int] = {}
             for index, (step, action) in enumerate(_iter_custom_code_actions(root)):
                 code = action.get("Code") or ""
-                node_id = (step.get("Id") if step is not None else "") or f"node{index}"
-                display_name = (step.get("DisplayName") if step is not None else "") or f"CustomCode{index}"
-                file_name = f"{_safe_path_component(node_id)}__{_safe_path_component(display_name)}.cs"
+                node_id = (step.get("Id") if step is not None else "") or ""
+                display_name = (step.get("DisplayName") if step is not None else "") or ""
+                file_name = _node_file_name(display_name, index, used_names)
                 file_path = _resolve_contained_path(func_dir, file_name)
                 with open(file_path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(code)
                 written_files.append(file_path)
+                node_provenance.append({"DisplayName": display_name, "NodeId": node_id, "File": file_name})
 
             body_sidecar = _resolve_contained_path(func_dir, "_body.xml")
             with open(body_sidecar, "w", encoding="utf-8", newline="\n") as f:
@@ -336,9 +364,16 @@ class KineticEfxLibraryService(KineticBaseClient):
 
         ignore_fields = DEFAULT_IGNORE_FIELDS | {"Body"}
         meta_rows = normalize_artifact_rows([row], ignore_fields=ignore_fields)
+        meta_doc = meta_rows[0] if meta_rows else {}
+        # NodeId is recorded here for provenance/debugging only -- it's the
+        # GUID as seen in THIS environment at extraction time, and is never
+        # read back as the source of truth for push-back (see
+        # _node_file_name). A different environment may legitimately have a
+        # different NodeId for the same logical (DisplayName-matched) node.
+        meta_doc["Nodes"] = node_provenance
         meta_path = _resolve_contained_path(func_dir, "_meta.json")
         with open(meta_path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(meta_rows[0] if meta_rows else {}, f, indent=2, sort_keys=True)
+            json.dump(meta_doc, f, indent=2, sort_keys=True)
             f.write("\n")
 
         return {
@@ -463,12 +498,17 @@ class KineticEfxLibraryService(KineticBaseClient):
 
         changed = False
         new_body = body
-        for step, action in _iter_custom_code_actions(root):
+        used_names: Dict[str, int] = {}
+        for index, (step, action) in enumerate(_iter_custom_code_actions(root)):
             if step is None:
                 continue
             node_id = step.get("Id") or ""
             display_name = step.get("DisplayName") or ""
-            file_name = f"{_safe_path_component(node_id)}__{_safe_path_component(display_name)}.cs"
+            # Matched by DisplayName, not NodeId -- see _node_file_name for
+            # why: the live NodeId (used just below, for the actual edit)
+            # is always read fresh here, never assumed to match what a
+            # local filename might have encoded from a different environment.
+            file_name = _node_file_name(display_name, index, used_names)
             file_path = os.path.join(func_dir, file_name)
             if not os.path.isfile(file_path):
                 continue
