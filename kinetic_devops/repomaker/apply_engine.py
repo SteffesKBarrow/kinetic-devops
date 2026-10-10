@@ -90,7 +90,7 @@ def _detect_current_repo_from_git() -> Dict[str, str]:
 
     parsed = _parse_git_remote(remote)
     host = parsed["host"]
-    provider = "github" if host.endswith("github.com") else "forgejo"
+    provider = "github" if host == "github.com" or host.endswith(".github.com") else "forgejo"
 
     result = {
         "provider": provider,

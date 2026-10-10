@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from kinetic_devops.repomaker import __main__ as repomaker_cli
 from kinetic_devops.repomaker import apply as repomaker_apply
+from kinetic_devops.repomaker import apply_engine as repomaker_apply_engine
 from kinetic_devops.repomaker import reposmith as repomaker_reposmith
 
 
@@ -63,6 +64,29 @@ class TestRepoMakerCli(unittest.TestCase):
 
         self.assertEqual(code, 9)
         repo_maker_main.assert_called_once_with(["--apply"])
+
+
+class TestApplyEngineProviderDetection(unittest.TestCase):
+    """host.endswith("github.com") would wrongly match a lookalike host like
+    "evilgithub.com" (no dot boundary) -- regression tests for the fix."""
+
+    def test_detect_current_repo_does_not_misclassify_lookalike_host(self):
+        with patch.object(
+            repomaker_apply_engine.subprocess,
+            "check_output",
+            return_value="https://evilgithub.com/acme/project.git\n",
+        ):
+            detected = repomaker_apply_engine._detect_current_repo_from_git()
+        self.assertEqual(detected["provider"], "forgejo")
+
+    def test_detect_current_repo_classifies_github_subdomain(self):
+        with patch.object(
+            repomaker_apply_engine.subprocess,
+            "check_output",
+            return_value="https://ghe.github.com/acme/project.git\n",
+        ):
+            detected = repomaker_apply_engine._detect_current_repo_from_git()
+        self.assertEqual(detected["provider"], "github")
 
 
 if __name__ == "__main__":

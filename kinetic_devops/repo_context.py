@@ -70,7 +70,7 @@ def detect_from_git(error_type: type[Exception] = RuntimeError) -> Dict[str, str
 
     parsed = parse_git_remote(remote, error_type=error_type)
     host = parsed["host"]
-    provider = "github" if host.endswith("github.com") else "forgejo"
+    provider = "github" if host == "github.com" or host.endswith(".github.com") else "forgejo"
 
     parsed["provider"] = provider
     return parsed
